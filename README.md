@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 <div align="center">
 
 # 🔍 AI Code Sherlock
@@ -224,6 +223,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 Built with ❤️ for developers who demand precision
 </div>
 =======
-# ai-code-sherlock
-AI-powered IDE assistant for intelligent code analysis, surgical patching and autonomous improvement pipelines
->>>>>>> b5035ea66163b470d69fddf9a1dd22892de3253e
+# ai-code-sherlock 
