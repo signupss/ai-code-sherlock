@@ -11,7 +11,7 @@
 
 [🌐 Website](https://ai-code-sherlock-site.vercel.app) · [⬇ Download](https://github.com/signupss/ai-code-sherlock/releases/latest) · [📖 Docs](#-quick-start) · [🐛 Issues](https://github.com/signupss/ai-code-sherlock/issues)
 
-![AI Code Sherlock Screenshot](https://via.placeholder.com/900x500/0f1219/6366f1?text=AI+Code+Sherlock+v2.0)
+![AI Code Sherlock Screenshot](screenshot.png)
 
 </div>
 
@@ -222,5 +222,3 @@ MIT License — see [LICENSE](LICENSE) for details.
 <div align="center">
 Built with ❤️ for developers who demand precision
 </div>
-=======
-# ai-code-sherlock 
