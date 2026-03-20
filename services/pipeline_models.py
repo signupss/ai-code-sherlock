@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Optional
 
 
+try:
+    from ui.i18n import tr
+except ImportError:
+    def tr(s): return s
+
+
 class PipelineStopCondition(str, Enum):
     MANUAL         = "manual"
     MAX_ITERATIONS = "max_iterations"
@@ -43,32 +49,52 @@ class AIStrategy(str, Enum):
     ENSEMBLE       = "ensemble"       # Try multiple approaches, pick best
 
 
-AI_STRATEGY_DESCRIPTIONS = {
-    AIStrategy.CONSERVATIVE:
-        "Только исправляет ошибки. Минимальные изменения. "
-        "Не трогает рабочий код без явной причины.",
-    AIStrategy.BALANCED:
-        "Исправляет ошибки + умеренные улучшения. "
-        "Оптимальный баланс между стабильностью и прогрессом.",
-    AIStrategy.AGGRESSIVE:
-        "Максимальные улучшения, творческие изменения. "
-        "Может рефакторить логику для достижения цели.",
-    AIStrategy.EXPLORER:
-        "Каждую итерацию пробует разный подход. "
-        "Ищет неочевидные решения, избегает повторения.",
-    AIStrategy.EXPLOIT:
-        "Углубляет то что уже работало в предыдущих итерациях. "
-        "Усиливает успешные паттерны.",
-    AIStrategy.SAFE_RATCHET:
-        "Применяет патч только если метрики улучшились. "
-        "При ухудшении — откат + другой подход.",
-    AIStrategy.HYPOTHESIS:
-        "Формулирует гипотезу → патч → проверка → вывод. "
-        "Научный подход к оптимизации.",
-    AIStrategy.ENSEMBLE:
-        "Генерирует 3 варианта патча, выбирает наиболее обоснованный. "
-        "Медленнее, но точнее.",
-}
+def get_strategy_descriptions() -> dict:
+    """Returns strategy descriptions in current language (evaluated lazily)."""
+    return {
+        AIStrategy.CONSERVATIVE: tr(
+            "Только исправляет ошибки. Минимальные изменения. "
+            "Не трогает рабочий код без явной причины."
+        ),
+        AIStrategy.BALANCED: tr(
+            "Исправляет ошибки + умеренные улучшения. "
+            "Оптимальный баланс между стабильностью и прогрессом."
+        ),
+        AIStrategy.AGGRESSIVE: tr(
+            "Максимальные улучшения, творческие изменения. "
+            "Может рефакторить логику для достижения цели."
+        ),
+        AIStrategy.EXPLORER: tr(
+            "Каждую итерацию пробует разный подход. "
+            "Ищет неочевидные решения, избегает повторения."
+        ),
+        AIStrategy.EXPLOIT: tr(
+            "Углубляет то что уже работало в предыдущих итерациях. "
+            "Усиливает успешные паттерны."
+        ),
+        AIStrategy.SAFE_RATCHET: tr(
+            "Применяет патч только если метрики улучшились. "
+            "При ухудшении — откат + другой подход."
+        ),
+        AIStrategy.HYPOTHESIS: tr(
+            "Формулирует гипотезу → патч → проверка → вывод. "
+            "Научный подход к оптимизации."
+        ),
+        AIStrategy.ENSEMBLE: tr(
+            "Генерирует 3 варианта патча, выбирает наиболее обоснованный. "
+            "Медленнее, но точнее."
+        ),
+    }
+
+# Backward-compat alias: lazy dict proxy that calls get_strategy_descriptions()
+class _LazyStrategyDict(dict):
+    """Dict that re-evaluates translations on every access."""
+    def __getitem__(self, key):
+        return get_strategy_descriptions()[key]
+    def get(self, key, default=None):
+        return get_strategy_descriptions().get(key, default)
+
+AI_STRATEGY_DESCRIPTIONS = _LazyStrategyDict()
 
 
 @dataclass
@@ -147,7 +173,7 @@ class ScriptConfig:
 
 @dataclass
 class PipelineConfig:
-    name: str = "Новый пайплайн"
+    name: str = "New Pipeline"
     goal: str = ""
     scripts: list[ScriptConfig] = field(default_factory=list)
 
@@ -182,6 +208,12 @@ class PipelineConfig:
         r"auc[:\s=]+(\d+\.?\d*)",
     ])
 
+    # Custom strategy (overrides ai_strategy if set)
+    custom_strategy: "CustomStrategy | None" = None
+
+    # Multi-AI consensus
+    consensus: "ConsensusConfig | None" = None
+
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
 
     @property
@@ -211,10 +243,15 @@ class PipelineConfig:
             "include_previous_patches": self.include_previous_patches,
             "memory_iterations": self.memory_iterations,
             "metric_patterns": self.metric_patterns,
+            "custom_strategy": self.custom_strategy.to_dict() if self.custom_strategy else None,
+            "consensus": self.consensus.to_dict() if self.consensus else None,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "PipelineConfig":
+        from services.pipeline_models import CustomStrategy, ConsensusConfig
+        cs_data = d.get("custom_strategy")
+        con_data = d.get("consensus")
         return cls(
             id=d.get("id", str(uuid.uuid4())[:8]),
             name=d.get("name", "Pipeline"),
@@ -233,6 +270,8 @@ class PipelineConfig:
             include_previous_patches=d.get("include_previous_patches", True),
             memory_iterations=d.get("memory_iterations", 5),
             metric_patterns=d.get("metric_patterns", []),
+            custom_strategy=CustomStrategy.from_dict(cs_data) if cs_data else None,
+            consensus=ConsensusConfig.from_dict(con_data) if con_data else None,
         )
 
 
@@ -293,3 +332,87 @@ class PipelineRun:
                 if k not in best or v > best[k]:
                     best[k] = v
         return best
+
+
+# ══════════════════════════════════════════════════════════════
+#  CUSTOM STRATEGY
+# ══════════════════════════════════════════════════════════════
+
+@dataclass
+class CustomStrategy:
+    """User-defined AI strategy with custom prompt instructions."""
+    id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    name: str = "My Strategy"
+    description: str = ""
+    system_prompt: str = ""           # injected as strategy instruction
+    temperature_override: float = -1  # -1 = use model default
+    max_patches_per_iter: int = 3
+    require_analysis: bool = True     # must provide analysis before patches
+    focus_on_metrics: bool = True     # emphasize metric improvement
+    icon: str = "✏️"
+
+    def to_dict(self) -> dict:
+        return {k: getattr(self, k) for k in self.__dataclass_fields__}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CustomStrategy":
+        valid = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
+        return cls(**valid)
+
+    def build_prompt_block(self) -> str:
+        parts = [f"\nСТРАТЕГИЯ: {self.name.upper()}\n"]
+        if self.description:
+            parts.append(f"Описание: {self.description}\n")
+        if self.system_prompt:
+            parts.append(self.system_prompt)
+        if self.focus_on_metrics:
+            parts.append("\nУчитывай метрики из лога при принятии решений.")
+        if self.require_analysis:
+            parts.append("\nОбязательно начни с анализа (3-5 предложений) перед патчами.")
+        if self.max_patches_per_iter > 0:
+            parts.append(f"\nМаксимум {self.max_patches_per_iter} патч(ей) за итерацию.")
+        return "\n".join(parts)
+
+
+# ══════════════════════════════════════════════════════════════
+#  MULTI-AI CONSENSUS
+# ══════════════════════════════════════════════════════════════
+
+class ConsensusMode(str, Enum):
+    DISABLED       = "disabled"       # single AI
+    VOTE           = "vote"           # majority vote on patch selection
+    BEST_OF_N      = "best_of_n"      # pick the response with most patches
+    MERGE          = "merge"          # combine non-overlapping patches
+    JUDGE          = "judge"          # one AI judges responses of others
+
+
+@dataclass
+class ConsensusConfig:
+    """Configuration for multi-AI consensus runs."""
+    enabled: bool = False
+    mode: ConsensusMode = ConsensusMode.VOTE
+    model_ids: list[str] = field(default_factory=list)  # model IDs to query
+    judge_model_id: str = ""   # for JUDGE mode: which model picks best
+    min_agreement: int = 2     # for VOTE: how many must agree on a patch
+    timeout_per_model: int = 120  # seconds per model query
+
+    def to_dict(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "mode": self.mode.value,
+            "model_ids": self.model_ids,
+            "judge_model_id": self.judge_model_id,
+            "min_agreement": self.min_agreement,
+            "timeout_per_model": self.timeout_per_model,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ConsensusConfig":
+        return cls(
+            enabled=d.get("enabled", False),
+            mode=ConsensusMode(d.get("mode", "disabled")),
+            model_ids=d.get("model_ids", []),
+            judge_model_id=d.get("judge_model_id", ""),
+            min_agreement=d.get("min_agreement", 2),
+            timeout_per_model=d.get("timeout_per_model", 120),
+        )

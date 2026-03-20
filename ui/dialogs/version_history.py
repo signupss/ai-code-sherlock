@@ -14,6 +14,12 @@ from PyQt6.QtWidgets import (
 
 from services.version_control import VersionControlService, FileVersion
 
+try:
+    from ui.i18n import tr, register_listener
+except ImportError:
+    def tr(s): return s
+    def register_listener(cb): pass
+
 
 class VersionHistoryDialog(QDialog):
 
@@ -32,13 +38,32 @@ class VersionHistoryDialog(QDialog):
         self._current_content = current_content
         self._versions = vc.get_versions(file_path)
 
-        self.setWindowTitle(f"История версий — {Path(file_path).name}")
+        self.setWindowTitle(f"{tr('История версий')} — {Path(file_path).name}")
         self.setMinimumSize(900, 600)
         self.resize(1000, 680)
         self.setModal(True)
 
         self._build_ui()
         self._populate()
+        register_listener(self._retranslate)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        try:
+            from ui.theme_manager import apply_dark_titlebar
+            apply_dark_titlebar(self)
+        except Exception:
+            pass
+
+    def _retranslate(self, _lang: str = ""):
+        self.setWindowTitle(f"{tr('История версий')} — {Path(self._file_path).name}")
+        self._lbl_versions_hdr.setText(tr("ВЕРСИИ"))
+        self._right_tabs.setTabText(0, tr("Diff (относительно текущего)"))
+        self._right_tabs.setTabText(1, tr("Содержимое версии"))
+        self._right_tabs.setTabText(2, tr("Метаданные"))
+        self._btn_snapshot.setText(tr("📸 Создать снапшот"))
+        self._btn_restore.setText(tr("⏪ Восстановить эту версию"))
+        self._btn_close.setText(tr("Закрыть"))
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -47,12 +72,12 @@ class VersionHistoryDialog(QDialog):
 
         # Header
         hdr = QHBoxLayout()
-        title = QLabel(f"📋 История: {Path(self._file_path).name}")
+        title = QLabel(f"📋 {tr('История')}: {Path(self._file_path).name}")
         title.setObjectName("titleLabel")
         hdr.addWidget(title)
         hdr.addStretch()
 
-        stats = QLabel(f"{len(self._versions)} версий")
+        stats = QLabel(f"{len(self._versions)} {tr('версий')}")
         stats.setStyleSheet("color: #E0AF68; font-size: 12px;")
         hdr.addWidget(stats)
         layout.addLayout(hdr)
@@ -65,9 +90,9 @@ class VersionHistoryDialog(QDialog):
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 0, 0)
 
-        lbl_list = QLabel("ВЕРСИИ")
-        lbl_list.setObjectName("sectionLabel")
-        ll.addWidget(lbl_list)
+        self._lbl_versions_hdr = QLabel(tr("ВЕРСИИ"))
+        self._lbl_versions_hdr.setObjectName("sectionLabel")
+        ll.addWidget(self._lbl_versions_hdr)
 
         self._list = QListWidget()
         self._list.setStyleSheet("""
@@ -82,52 +107,52 @@ class VersionHistoryDialog(QDialog):
         splitter.addWidget(left)
 
         # Right: diff / content preview
-        right = QTabWidget()
+        self._right_tabs = QTabWidget()
 
         # Diff view
         self._diff_view = QTextEdit()
         self._diff_view.setReadOnly(True)
         self._diff_view.setFont(QFont("JetBrains Mono,Cascadia Code,Consolas", 11))
         self._diff_view.setStyleSheet("background: #0A0D14; border: none; color: #CDD6F4;")
-        right.addTab(self._diff_view, "Diff (относительно текущего)")
+        self._right_tabs.addTab(self._diff_view, tr("Diff (относительно текущего)"))
 
         # Content view
         self._content_view = QTextEdit()
         self._content_view.setReadOnly(True)
         self._content_view.setFont(QFont("JetBrains Mono,Cascadia Code,Consolas", 11))
         self._content_view.setStyleSheet("background: #0A0D14; border: none; color: #CDD6F4;")
-        right.addTab(self._content_view, "Содержимое версии")
+        self._right_tabs.addTab(self._content_view, tr("Содержимое версии"))
 
         # Meta view
         self._meta_view = QTextEdit()
         self._meta_view.setReadOnly(True)
         self._meta_view.setStyleSheet("background: #0A0D14; border: none; color: #A9B1D6; font-size: 12px;")
-        right.addTab(self._meta_view, "Метаданные")
+        self._right_tabs.addTab(self._meta_view, tr("Метаданные"))
 
-        splitter.addWidget(right)
+        splitter.addWidget(self._right_tabs)
         splitter.setSizes([270, 700])
         layout.addWidget(splitter, stretch=1)
 
         # Footer
         footer = QHBoxLayout()
 
-        btn_snapshot = QPushButton("📸 Создать снапшот")
-        btn_snapshot.setToolTip("Сохранить состояние всего проекта")
-        btn_snapshot.clicked.connect(self._create_snapshot)
-        footer.addWidget(btn_snapshot)
+        self._btn_snapshot = QPushButton(tr("📸 Создать снапшот"))
+        self._btn_snapshot.setToolTip(tr("Сохранить состояние всего проекта"))
+        self._btn_snapshot.clicked.connect(self._create_snapshot)
+        footer.addWidget(self._btn_snapshot)
 
         footer.addStretch()
 
-        self._btn_restore = QPushButton("⏪ Восстановить эту версию")
+        self._btn_restore = QPushButton(tr("⏪ Восстановить эту версию"))
         self._btn_restore.setObjectName("primaryBtn")
         self._btn_restore.setEnabled(False)
         self._btn_restore.clicked.connect(self._restore_selected)
         footer.addWidget(self._btn_restore)
 
-        btn_close = QPushButton("Закрыть")
-        btn_close.setFixedWidth(90)
-        btn_close.clicked.connect(self.reject)
-        footer.addWidget(btn_close)
+        self._btn_close = QPushButton(tr("Закрыть"))
+        self._btn_close.setFixedWidth(90)
+        self._btn_close.clicked.connect(self.reject)
+        footer.addWidget(self._btn_close)
 
         layout.addLayout(footer)
 
@@ -135,7 +160,7 @@ class VersionHistoryDialog(QDialog):
         self._list.clear()
 
         # Current version at top
-        curr_item = QListWidgetItem("● Текущая версия")
+        curr_item = QListWidgetItem(tr("● Текущая версия"))
         curr_item.setForeground(QColor("#9ECE6A"))
         curr_item.setData(Qt.ItemDataRole.UserRole, None)
         self._list.addItem(curr_item)
@@ -165,9 +190,9 @@ class VersionHistoryDialog(QDialog):
 
         if version is None:
             # Current version
-            self._diff_view.setHtml("<span style='color:#565f89'>Это текущая версия файла.</span>")
+            self._diff_view.setHtml(f"<span style='color:#565f89'>{tr('Это текущая версия файла.')}</span>")
             self._content_view.setPlainText(self._current_content)
-            self._meta_view.setPlainText("Текущая версия — не сохранена в истории.")
+            self._meta_view.setPlainText(tr("Текущая версия — не сохранена в истории."))
             self._btn_restore.setEnabled(False)
             return
 
@@ -206,7 +231,7 @@ class VersionHistoryDialog(QDialog):
     def _render_diff(self, diff_lines: list[str]):
         if not diff_lines:
             self._diff_view.setHtml(
-                "<span style='color:#565f89'>Изменений нет — файл идентичен текущей версии.</span>"
+                f"<span style='color:#565f89'>{tr('Изменений нет — файл идентичен текущей версии.')}</span>"
             )
             return
 
@@ -239,10 +264,10 @@ class VersionHistoryDialog(QDialog):
             return
 
         reply = QMessageBox.question(
-            self, "Восстановить версию",
-            f"Восстановить файл к версии от {version.display_time}?\n\n"
+            self, tr("Восстановить версию"),
+            f"{tr('Восстановить файл к версии от')} {version.display_time}?\n\n"
             f"Описание: {version.description}\n\n"
-            "Текущий файл будет сохранён как резервная копия.",
+            f"{tr('Текущий файл будет сохранён как резервная копия.')}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -253,26 +278,25 @@ class VersionHistoryDialog(QDialog):
             self.version_restored.emit(self._file_path, new_content)
             self._current_content = new_content
             QMessageBox.information(
-                self, "Успешно",
-                f"Файл восстановлен к версии {version.display_time}"
+                self, tr("Успешно"),
+                f"{tr('Файл восстановлен к версии')} {version.display_time}"
             )
             self.accept()
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось восстановить: {e}")
+            QMessageBox.critical(self, tr("Ошибка"), f"{tr('Не удалось восстановить:')} {e}")
 
     def _create_snapshot(self):
         from PyQt6.QtWidgets import QInputDialog
         name, ok = QInputDialog.getText(
-            self, "Снапшот проекта",
-            "Название снапшота:"
+            self, tr("Снапшот проекта"),
+            tr("Название снапшота:")
         )
         if ok and name:
             desc, ok2 = QInputDialog.getText(
-                self, "Описание", "Описание (необязательно):"
+                self, tr("Описание"), tr("Описание (необязательно):")
             )
-            # Get all tracked file paths — simplified to just current file
             snap = self._vc.create_snapshot(name, desc or "", [self._file_path])
             QMessageBox.information(
-                self, "Снапшот создан",
-                f"Снапшот '{name}' создан.\n{len(snap.file_versions)} файл(ов) сохранено."
+                self, tr("Снапшот создан"),
+                f"'{name}' {tr('создан')}.\n{len(snap.file_versions)} {tr('файл(ов) сохранено.')}"
             )

@@ -33,8 +33,9 @@ class PatchEngine(IPatchEngine):
     """
 
     # Primary format: [SEARCH_BLOCK] ... [REPLACE_BLOCK] ... [END_PATCH]
+    # Primary: greedy capture — handles both empty and non-empty SEARCH_BLOCK
     _BRACKET_RE = re.compile(
-        r"\[SEARCH_BLOCK\]\s*\n(.*?)\n\s*\[REPLACE_BLOCK\]\s*\n(.*?)(?=\[SEARCH_BLOCK\]|\[END_PATCH\]|$)",
+        r"\[SEARCH_BLOCK\](.*?)\[REPLACE_BLOCK\](.*?)(?=\[SEARCH_BLOCK\]|\[END_PATCH\]|$)",
         re.DOTALL,
     )
 
@@ -44,6 +45,20 @@ class PatchEngine(IPatchEngine):
         re.DOTALL,
     )
 
+    # Filename hint pattern near patch blocks
+    _FILENAME_HINT_RE = re.compile(
+        r"`([^`\s]{1,60}\.[a-zA-Z0-9]{1,10})`"
+        r"|(?:[ФфFf]айл|[Сс]оздаю|[Ff]ile|[Cc]reat\w+)[:\s]+[`\"]?([^\s`\"]{1,60}\.[a-zA-Z0-9]{1,10})[`\"]?",
+        re.IGNORECASE
+    )
+
+    # Placeholder strings AI writes when no real code exists in context
+    _SEARCH_PLACEHOLDERS: frozenset = frozenset({
+        "## релевантный код", "## relevant code",
+        "## код проекта",    "## project code",
+        "## контекст",       "## context",
+    })
+
     def parse_patches(self, ai_response: str) -> list[PatchBlock]:
         if not ai_response:
             return []
@@ -52,27 +67,55 @@ class PatchEngine(IPatchEngine):
 
         # Strategy 1: bracket format
         for m in self._BRACKET_RE.finditer(ai_response):
-            search = m.group(1).strip()
+            search  = m.group(1).strip()
             replace = m.group(2).strip()
-            if search:
-                patches.append(PatchBlock(search_content=search, replace_content=replace))
+            if not replace:
+                continue   # nothing to write
+            # Treat placeholder strings as empty search (= new file creation)
+            if search.lower() in self._SEARCH_PLACEHOLDERS:
+                search = ""
+            file_path = self._extract_filename_hint(ai_response, m.start())
+            patches.append(PatchBlock(
+                search_content=search,
+                replace_content=replace,
+                file_path=file_path,
+            ))
 
         # Strategy 2: fenced format (fallback)
         if not patches:
             for m in self._FENCED_RE.finditer(ai_response):
-                search = m.group(1).strip()
+                search  = m.group(1).strip()
                 replace = m.group(2).strip()
-                if search:
-                    patches.append(PatchBlock(search_content=search, replace_content=replace))
+                if not replace:
+                    continue
+                if search.lower() in self._SEARCH_PLACEHOLDERS:
+                    search = ""
+                file_path = self._extract_filename_hint(ai_response, m.start())
+                patches.append(PatchBlock(
+                    search_content=search,
+                    replace_content=replace,
+                    file_path=file_path,
+                ))
 
         return patches
 
+    def _extract_filename_hint(self, text: str, patch_start: int) -> str | None:
+        """Scan up to 500 chars before the patch block for a filename mention."""
+        window = text[max(0, patch_start - 500): patch_start]
+        matches = list(self._FILENAME_HINT_RE.finditer(window))
+        if not matches:
+            return None
+        groups = [g for g in matches[-1].groups() if g]
+        if groups:
+            name = groups[-1].strip().strip("`\"'")
+            if "." in name and len(name) < 80 and "/" not in name and "\\" not in name:
+                return name
+        return None
+
     def validate(self, file_content: str, patch: PatchBlock) -> PatchValidationResult:
         if not patch.search_content:
-            return PatchValidationResult(
-                is_valid=False, match_count=0, match_line_start=-1,
-                error_message="Search block is empty"
-            )
+            # Empty search = new-file creation, handled upstream — treated as valid
+            return PatchValidationResult(is_valid=True, match_count=0, match_line_start=0)
 
         # Exact match
         count = file_content.count(patch.search_content)
@@ -161,11 +204,18 @@ class PromptEngine(IPromptEngine):
 <новый код замены>
 [END_PATCH]
 
+СОЗДАНИЕ НОВОГО ФАЙЛА (файл ещё не существует):
+Укажи имя файла ПЕРЕД блоком (например: "Создаю `main.py`:"), затем оставь SEARCH_BLOCK пустым:
+[SEARCH_BLOCK]
+[REPLACE_BLOCK]
+<полное содержимое нового файла>
+[END_PATCH]
+
 КРИТИЧЕСКИЕ ПРАВИЛА:
 1. SEARCH_BLOCK должен ТОЧНО совпадать с кодом в файле (пробелы, отступы).
-2. Включай только минимально необходимый кусок для замены — не весь файл.
-3. Если нужно несколько замен — повтори блоки SEARCH_BLOCK/REPLACE_BLOCK.
-4. Никогда не переписывай весь файл — только точечные изменения.
+2. Для НОВОГО файла — SEARCH_BLOCK всегда ПУСТОЙ. Никаких заглушек типа "## КОД ПРОЕКТА".
+3. Включай только минимально необходимый кусок для замены — не весь файл.
+4. Если нужно несколько замен — повтори блоки SEARCH_BLOCK/REPLACE_BLOCK.
 5. Объясни ЧТО и ПОЧЕМУ меняешь ПЕРЕД блоками патча.
 6. Отвечай на языке пользователя."""
 
@@ -190,11 +240,13 @@ class PromptEngine(IPromptEngine):
         if context.focused_file_path:
             parts.append(f"**Основной файл:** `{context.focused_file_path}`\n")
 
-        parts.append("## КОД ПРОЕКТА")
-        for f in context.files:
-            tag = " *(сжато)*" if f.is_compressed else ""
-            parts.append(f"### `{f.relative_path}`{tag}")
-            parts.append(f"```\n{f.content}\n```\n")
+        if context.files:
+            parts.append("## КОД ПРОЕКТА")
+            for f in context.files:
+                tag = " *(сжато)*" if f.is_compressed else ""
+                parts.append(f"### `{f.relative_path}`{tag}")
+                parts.append(f"```\n{f.content}\n```\n")
+        # If no files: system prompt already instructs AI to create new file with empty SEARCH_BLOCK
 
         if context.error_logs:
             parts.append(f"## ЛОГИ ОШИБОК\n```\n{context.error_logs}\n```\n")
@@ -443,6 +495,21 @@ class ModelManager:
                 f"Active model: {model.display_name} [{model.source_type.value}]",
                 source="ModelManager"
             )
+
+    async def get_provider_by_id(self, model_id: str) -> Optional[IAiModelProvider]:
+        """Create a provider for a model by its ID. Used by consensus engine."""
+        if not self._settings:
+            self._settings = self._settings_mgr.load()
+        model = next((m for m in self._settings.models if m.id == model_id), None)
+        if not model:
+            return None
+        return self._create_provider(model)
+
+    def get_all_model_ids(self) -> list[tuple[str, str]]:
+        """Returns list of (id, display_name) for all configured models."""
+        if not self._settings:
+            self._settings = self._settings_mgr.load()
+        return [(m.id, m.display_name) for m in self._settings.models]
 
     def _create_provider(self, model: ModelDefinition) -> IAiModelProvider:
         from providers.providers import OllamaProvider, CustomApiProvider, FileSignalProvider, FileSignalService

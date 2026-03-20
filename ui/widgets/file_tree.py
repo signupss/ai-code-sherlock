@@ -15,6 +15,12 @@ from PyQt6.QtWidgets import (
 
 from services.engine import CODE_EXTENSIONS, IGNORED_DIRS
 
+try:
+    from ui.i18n import tr, register_listener
+except ImportError:
+    def tr(s): return s
+    def register_listener(cb): pass
+
 
 # File-type icon map (emoji fallback — no external assets needed)
 _FILE_ICONS: dict[str, str] = {
@@ -62,20 +68,20 @@ class FileTreeWidget(QWidget):
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(10, 0, 6, 0)
 
-        lbl = QLabel("ПРОВОДНИК")
+        lbl = QLabel(tr("ПРОВОДНИК"))
         lbl.setObjectName("sectionLabel")
         hl.addWidget(lbl)
         hl.addStretch()
 
         btn_open = QPushButton("📁")
         btn_open.setObjectName("iconBtn")
-        btn_open.setToolTip("Открыть папку проекта")
+        btn_open.setToolTip(tr("Открыть папку проекта"))
         btn_open.clicked.connect(self._pick_folder)
         hl.addWidget(btn_open)
 
         btn_refresh = QPushButton("↺")
         btn_refresh.setObjectName("iconBtn")
-        btn_refresh.setToolTip("Обновить")
+        btn_refresh.setToolTip(tr("Обновить"))
         btn_refresh.clicked.connect(self._refresh)
         hl.addWidget(btn_refresh)
 
@@ -83,19 +89,17 @@ class FileTreeWidget(QWidget):
 
         # Search filter
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Поиск файлов...")
+        self._search.setPlaceholderText(tr("Поиск файлов..."))
         self._search.setStyleSheet(
-            "border: none; border-bottom: 1px solid #1E2030; "
-            "background: #0A0D14; padding: 4px 10px; font-size: 12px;"
+            "border: none; border-bottom: 1px solid #1E2030; background: #0A0D14; padding: 4px 10px; font-size: 12px;"
         )
         self._search.textChanged.connect(self._on_filter_changed)
         layout.addWidget(self._search)
 
         # Root path label
-        self._root_label = QLabel("Папка не открыта")
+        self._root_label = QLabel(tr("Папка не открыта"))
         self._root_label.setStyleSheet(
-            "color: #565f89; font-size: 10px; padding: 3px 10px; "
-            "background: #0A0D14; border-bottom: 1px solid #1E2030;"
+            "color: #565f89; font-size: 10px; padding: 3px 10px; background: #0A0D14; border-bottom: 1px solid #1E2030;"
         )
         self._root_label.setWordWrap(False)
         self._root_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
@@ -139,14 +143,18 @@ class FileTreeWidget(QWidget):
 
     # ── Public API ─────────────────────────────────────────
 
-    def load_folder(self, path: str) -> None:
-        """Load a directory into the tree."""
+    def load_folder(self, path: str, emit_signal: bool = False) -> None:
+        """Load a directory into the tree.
+        emit_signal=False when called programmatically (avoids re-triggering _load_project).
+        emit_signal=True only when user explicitly picks a NEW folder via the tree UI.
+        """
         self._root_path = path
         short = self._truncate_path(path, 36)
         self._root_label.setText(f"  {short}")
         self._root_label.setToolTip(path)
         self._refresh()
-        self.folder_changed.emit(path)
+        if emit_signal:
+            self.folder_changed.emit(path)
 
     def select_file(self, path: str) -> None:
         """Highlight and scroll to a file in the tree."""
@@ -263,24 +271,24 @@ class FileTreeWidget(QWidget):
         """)
 
         if kind == "file" and path:
-            act_open = menu.addAction("📄  Открыть в редакторе")
+            act_open = menu.addAction(tr("📄  Открыть в редакторе"))
             act_open.triggered.connect(lambda: self.file_open_requested.emit(path))
 
-            act_ai = menu.addAction("🔍  Отправить в AI")
+            act_ai = menu.addAction(tr("🔍  Отправить в AI"))
             act_ai.triggered.connect(lambda: self.file_send_to_ai.emit(path))
 
             menu.addSeparator()
-            act_copy = menu.addAction("📋  Копировать путь")
+            act_copy = menu.addAction(tr("📋  Копировать путь"))
             act_copy.triggered.connect(lambda: self._copy_path(path))
 
-            act_reveal = menu.addAction("🗂  Показать в проводнике")
+            act_reveal = menu.addAction(tr("🗂  Показать в проводнике"))
             act_reveal.triggered.connect(lambda: self._reveal_in_explorer(path))
 
         elif kind == "dir" and path:
-            act_expand = menu.addAction("📂  Раскрыть")
+            act_expand = menu.addAction(tr("📂  Раскрыть"))
             act_expand.triggered.connect(lambda: item.setExpanded(True))
 
-            act_copy = menu.addAction("📋  Копировать путь")
+            act_copy = menu.addAction(tr("📋  Копировать путь"))
             act_copy.triggered.connect(lambda: self._copy_path(path))
 
         menu.exec(self._tree.mapToGlobal(pos))
@@ -297,23 +305,33 @@ class FileTreeWidget(QWidget):
     # ── Helpers ────────────────────────────────────────────
 
     def _pick_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Открыть папку проекта")
+        folder = QFileDialog.getExistingDirectory(self, tr("Открыть папку проекта"))
         if folder:
-            self.load_folder(folder)
+            self.load_folder(folder, emit_signal=True)
 
     def _copy_path(self, path: str):
         from PyQt6.QtWidgets import QApplication
         QApplication.clipboard().setText(path)
 
     def _reveal_in_explorer(self, path: str):
-        import subprocess, sys
-        folder = str(Path(path).parent)
+        import subprocess, sys, os
+        abs_path = str(Path(path).resolve())
         if sys.platform == "win32":
-            subprocess.Popen(["explorer", "/select,", path])
+            win_path = abs_path.replace("/", "\\")
+            # shell=True + quoted path is most reliable on all Windows versions
+            subprocess.Popen(f'explorer /select,"{win_path}"', shell=True)
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", path])
+            subprocess.Popen(["open", "-R", abs_path])
         else:
-            subprocess.Popen(["xdg-open", folder])
+            folder = str(Path(abs_path).parent)
+            for cmd in (["nautilus", "--select", abs_path],
+                        ["dolphin", "--select", abs_path],
+                        ["nemo", folder],
+                        ["xdg-open", folder]):
+                try:
+                    subprocess.Popen(cmd); break
+                except FileNotFoundError:
+                    continue
 
     def _find_and_select(self, parent: QTreeWidgetItem, path: str) -> bool:
         for i in range(parent.childCount()):

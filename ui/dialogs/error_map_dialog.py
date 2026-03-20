@@ -15,18 +15,34 @@ from PyQt6.QtWidgets import (
 
 from services.error_map import ErrorMapService, ErrorRecord, AvoidPattern
 
+try:
+    from ui.i18n import tr, register_listener, retranslate_widget
+except ImportError:
+    def tr(s): return s
+    def register_listener(cb): pass
+    def retranslate_widget(w): pass
+
 
 class ErrorMapDialog(QDialog):
 
     def __init__(self, error_map: ErrorMapService, parent=None):
         super().__init__(parent)
         self._em = error_map
-        self.setWindowTitle("Карта ошибок — AI Code Sherlock")
+        self.setWindowTitle(tr("Карта ошибок — AI Code Sherlock"))
         self.setMinimumSize(900, 580)
         self.resize(1050, 660)
         self.setModal(True)
         self._build_ui()
         self._refresh()
+        register_listener(lambda lang: retranslate_widget(self))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        try:
+            from ui.theme_manager import apply_dark_titlebar
+            apply_dark_titlebar(self)
+        except Exception:
+            pass
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -35,7 +51,7 @@ class ErrorMapDialog(QDialog):
 
         # Header + stats
         hdr = QHBoxLayout()
-        title = QLabel("🗂 Карта ошибок и решений")
+        title = QLabel(tr("🗂 Карта ошибок и решений"))
         title.setObjectName("titleLabel")
         hdr.addWidget(title)
         hdr.addStretch()
@@ -48,30 +64,30 @@ class ErrorMapDialog(QDialog):
         # Search + filter
         filter_row = QHBoxLayout()
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Поиск по ошибкам...")
+        self._search.setPlaceholderText(tr("Поиск по ошибкам..."))
         self._search.textChanged.connect(self._refresh)
         filter_row.addWidget(self._search)
 
         self._cmb_status = QComboBox()
-        self._cmb_status.addItems(["Все", "Открытые", "Решённые", "Игнорируемые"])
+        self._cmb_status.addItems([tr("Все"), tr("Открытые"), tr("Решённые"), tr("Игнорируемые")])
         self._cmb_status.currentIndexChanged.connect(self._refresh)
         filter_row.addWidget(self._cmb_status)
         layout.addLayout(filter_row)
 
         # Main tabs
         tabs = QTabWidget()
-        tabs.addTab(self._build_errors_tab(), "⚠️ Ошибки")
-        tabs.addTab(self._build_avoid_tab(), "🚫 Запрещённые подходы")
-        tabs.addTab(self._build_add_tab(), "➕ Добавить")
+        tabs.addTab(self._build_errors_tab(), tr("⚠️ Ошибки"))
+        tabs.addTab(self._build_avoid_tab(), tr("🚫 Запрещённые подходы"))
+        tabs.addTab(self._build_add_tab(), tr("➕ Добавить"))
         layout.addWidget(tabs, stretch=1)
 
         # Footer
         footer = QHBoxLayout()
-        btn_clean = QPushButton("🗑 Очистить решённые")
+        btn_clean = QPushButton(tr("🗑 Очистить решённые"))
         btn_clean.clicked.connect(self._clean_resolved)
         footer.addWidget(btn_clean)
         footer.addStretch()
-        btn_close = QPushButton("Закрыть")
+        btn_close = QPushButton(tr("Закрыть"))
         btn_close.setFixedWidth(90)
         btn_close.clicked.connect(self.accept)
         footer.addWidget(btn_close)
@@ -89,7 +105,7 @@ class ErrorMapDialog(QDialog):
         # Table
         self._table = QTableWidget(0, 6)
         self._table.setHorizontalHeaderLabels(
-            ["Тип", "Сообщение", "Файл", "Кол-во", "Статус", "Последний раз"]
+            [tr("Тип"), tr("Сообщение"), tr("Файл"), tr("Кол-во"), tr("Статус"), tr("Последний раз")]
         )
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -111,23 +127,23 @@ class ErrorMapDialog(QDialog):
         dl.setContentsMargins(0, 4, 0, 0)
 
         detail_hdr = QHBoxLayout()
-        lbl = QLabel("ДЕТАЛИ")
+        lbl = QLabel(tr("ДЕТАЛИ"))
         lbl.setObjectName("sectionLabel")
         detail_hdr.addWidget(lbl)
         detail_hdr.addStretch()
 
-        self._btn_resolve = QPushButton("✓ Отметить решённой")
+        self._btn_resolve = QPushButton(tr("✓ Отметить решённой"))
         self._btn_resolve.setObjectName("successBtn")
         self._btn_resolve.setEnabled(False)
         self._btn_resolve.clicked.connect(self._resolve_selected)
         detail_hdr.addWidget(self._btn_resolve)
 
-        self._btn_ignore = QPushButton("Игнорировать")
+        self._btn_ignore = QPushButton(tr("Игнорировать"))
         self._btn_ignore.setEnabled(False)
         self._btn_ignore.clicked.connect(self._ignore_selected)
         detail_hdr.addWidget(self._btn_ignore)
 
-        self._btn_add_avoid = QPushButton("🚫 Добавить запрет")
+        self._btn_add_avoid = QPushButton(tr("🚫 Добавить запрет"))
         self._btn_add_avoid.setEnabled(False)
         self._btn_add_avoid.clicked.connect(self._add_avoid_from_error)
         detail_hdr.addWidget(self._btn_add_avoid)
@@ -154,7 +170,7 @@ class ErrorMapDialog(QDialog):
         layout.setContentsMargins(0, 8, 0, 0)
 
         self._avoid_list = QTableWidget(0, 3)
-        self._avoid_list.setHorizontalHeaderLabels(["Плохой подход", "Лучше делать", "Контекст"])
+        self._avoid_list.setHorizontalHeaderLabels([tr("Плохой подход"), tr("Лучше делать"), tr("Контекст")])
         self._avoid_list.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._avoid_list.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._avoid_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -169,7 +185,7 @@ class ErrorMapDialog(QDialog):
         layout.addWidget(self._avoid_list)
 
         btn_row = QHBoxLayout()
-        btn_del = QPushButton("🗑 Удалить выбранный")
+        btn_del = QPushButton(tr("🗑 Удалить выбранный"))
         btn_del.setObjectName("dangerBtn")
         btn_del.clicked.connect(self._delete_avoid)
         btn_row.addWidget(btn_del)
@@ -185,24 +201,24 @@ class ErrorMapDialog(QDialog):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(10)
 
-        layout.addWidget(QLabel("Добавить запрещённый подход вручную:"))
+        layout.addWidget(QLabel(tr("Добавить запрещённый подход вручную:")))
 
         self._fld_bad_desc = QLineEdit()
-        self._fld_bad_desc.setPlaceholderText("Описание плохого подхода...")
-        layout.addWidget(QLabel("Плохой подход:"))
+        self._fld_bad_desc.setPlaceholderText(tr("Описание плохого подхода..."))
+        layout.addWidget(QLabel(tr("Плохой подход:")))
         layout.addWidget(self._fld_bad_desc)
 
         self._fld_better = QLineEdit()
-        self._fld_better.setPlaceholderText("Что делать вместо этого...")
-        layout.addWidget(QLabel("Правильный подход:"))
+        self._fld_better.setPlaceholderText(tr("Что делать вместо этого..."))
+        layout.addWidget(QLabel(tr("Правильный подход:")))
         layout.addWidget(self._fld_better)
 
         self._fld_ctx = QLineEdit()
-        self._fld_ctx.setPlaceholderText("В каком контексте это произошло...")
-        layout.addWidget(QLabel("Контекст (необязательно):"))
+        self._fld_ctx.setPlaceholderText(tr("В каком контексте это произошло..."))
+        layout.addWidget(QLabel(tr("Контекст (необязательно):")))
         layout.addWidget(self._fld_ctx)
 
-        btn_add = QPushButton("➕ Добавить запрет")
+        btn_add = QPushButton(tr("➕ Добавить запрет"))
         btn_add.setObjectName("primaryBtn")
         btn_add.clicked.connect(self._add_avoid_manual)
         layout.addWidget(btn_add)
@@ -215,10 +231,10 @@ class ErrorMapDialog(QDialog):
     def _refresh(self):
         stats = self._em.stats()
         self._lbl_stats.setText(
-            f"Всего: {stats['total_errors']}  |  "
-            f"Открытых: {stats['open']}  |  "
-            f"Решённых: {stats['resolved']}  |  "
-            f"Запретов: {stats['avoid_patterns']}"
+            f"{tr('Всего:')} {stats['total_errors']}  |  "
+            f"{tr('Открытых:')} {stats['open']}  |  "
+            f"{tr('Решённых:')} {stats['resolved']}  |  "
+            f"{tr('Запретов:')} {stats['avoid_patterns']}"
         )
         self._fill_table()
         self._fill_avoid_table()
@@ -322,8 +338,8 @@ class ErrorMapDialog(QDialog):
             return
         from PyQt6.QtWidgets import QInputDialog
         solution, ok = QInputDialog.getMultiLineText(
-            self, "Отметить решённой",
-            "Опиши решение (необязательно):"
+            self, tr("Отметить решённой"),
+            tr("Опиши решение (необязательно):")
         )
         if ok:
             self._em.mark_resolved(eid, solution=solution)
@@ -348,15 +364,15 @@ class ErrorMapDialog(QDialog):
 
         from PyQt6.QtWidgets import QInputDialog
         bad, ok1 = QInputDialog.getText(
-            self, "Запрещённый подход",
-            "Что НЕ нужно делать?",
+            self, tr("Запрещённый подход"),
+            tr("Что НЕ нужно делать?"),
             text=f"Пробовали решить {rec.error_type} через..."
         )
         if not ok1:
             return
         better, ok2 = QInputDialog.getText(
-            self, "Лучший подход",
-            "Что нужно делать вместо этого?"
+            self, tr("Лучший подход"),
+            tr("Что нужно делать вместо этого?")
         )
         if ok2 and bad and better:
             self._em.add_avoid_pattern(
@@ -372,7 +388,7 @@ class ErrorMapDialog(QDialog):
         better = self._fld_better.text().strip()
         ctx = self._fld_ctx.text().strip()
         if not bad or not better:
-            QMessageBox.warning(self, "Ошибка", "Заполни оба поля.")
+            QMessageBox.warning(self, tr("Ошибка"), tr("Заполни оба поля."))
             return
         self._em.add_avoid_pattern(
             description=bad,
@@ -384,7 +400,7 @@ class ErrorMapDialog(QDialog):
         self._fld_better.clear()
         self._fld_ctx.clear()
         self._refresh()
-        QMessageBox.information(self, "Добавлено", "Запрещённый подход добавлен.")
+        QMessageBox.information(self, tr("Добавлено"), tr("Запрещённый подход добавлен."))
 
     def _delete_avoid(self):
         row = self._avoid_list.currentRow()
@@ -400,8 +416,8 @@ class ErrorMapDialog(QDialog):
 
     def _clean_resolved(self):
         reply = QMessageBox.question(
-            self, "Очистить",
-            "Удалить все решённые ошибки из базы?",
+            self, tr("Очистить"),
+            tr("Удалить все решённые ошибки из базы?"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:

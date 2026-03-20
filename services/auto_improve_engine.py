@@ -266,10 +266,18 @@ class AutoImproveEngine:
         prompt = self._build_prompt(cfg, iteration, primary_results,
                                     output_contexts, run.iterations, strategy)
 
-        # ── Query AI ─────────────────────────────────────
-        self._emit("ai_thinking", {"message": f"AI анализирует [{strategy.value}]..."})
-        ai_response = await self._query_ai(prompt, cfg)
-        result.ai_analysis = ai_response
+        # ── Query AI (single or consensus) ────────────────────
+        strategy_label = (cfg.custom_strategy.name if cfg.custom_strategy
+                          else strategy.value)
+        self._emit("ai_thinking", {"message": f"AI анализирует [{strategy_label}]..."})
+
+        if (cfg.consensus and cfg.consensus.enabled and cfg.consensus.model_ids):
+            ai_response, consensus_notes = await self._query_consensus(cfg, prompt)
+            result.ai_analysis = ai_response
+            self._emit("consensus_result", {"notes": consensus_notes})
+        else:
+            ai_response = await self._query_ai(prompt, cfg)
+            result.ai_analysis = ai_response
 
         patches = self._patch.parse_patches(ai_response)
         result.patches_generated = len(patches)
@@ -334,6 +342,10 @@ class AutoImproveEngine:
     def _get_current_strategy(
         self, cfg: PipelineConfig, history: list[IterationResult]
     ) -> AIStrategy:
+        # Custom strategy overrides the built-in one
+        if cfg.custom_strategy:
+            return cfg.ai_strategy  # keep enum for internal logic, prompt comes from custom
+
         base = cfg.ai_strategy
 
         if base == AIStrategy.EXPLORER:
@@ -434,7 +446,11 @@ class AutoImproveEngine:
             parts.append(f"\n{err_ctx}\n")
 
         # Strategy instruction
-        parts.append(f"\n{STRATEGY_PROMPTS[strategy]}")
+        # Strategy instruction — custom overrides built-in
+        if cfg.custom_strategy:
+            parts.append(f"\n{cfg.custom_strategy.build_prompt_block()}")
+        else:
+            parts.append(f"\n{STRATEGY_PROMPTS[strategy]}")
 
         # Final instructions
         parts.append("""
@@ -485,6 +501,29 @@ SEARCH_BLOCK должен ТОЧНО совпадать с кодом файла
             ChatMessage(role=MessageRole.USER, content=prompt),
         ]
         return await self._mm.active_provider.complete(messages)
+
+    async def _query_consensus(
+        self, cfg: PipelineConfig, prompt: str
+    ) -> tuple[str, str]:
+        """Query multiple models via consensus engine. Returns (response, notes)."""
+        from services.consensus_engine import ConsensusEngine
+        engine = ConsensusEngine(
+            model_manager=self._mm,
+            patch_engine=self._patch,
+            on_event=self._emit,
+            logger=self._logger,
+        )
+        system = self._prompt.build_system_prompt(sherlock_mode=False)
+        system += "\nРЕЖИМ: ТОЛЬКО ПАТЧИ [SEARCH/REPLACE]\n"
+
+        result = await engine.run(cfg.consensus, system, prompt)
+
+        # Annotate response with consensus info
+        annotated = (
+            f"[КОНСЕНСУС: {result.mode.value} | {result.notes}]\n\n"
+            + result.final_response
+        )
+        return annotated, result.notes
 
     # ── Patch Application ─────────────────────────────────
 

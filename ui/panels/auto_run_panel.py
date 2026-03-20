@@ -18,6 +18,11 @@ from PyQt6.QtWidgets import (
 from services.pipeline_models import PipelineConfig, PipelineStatus, PipelineRun
 from services.auto_improve_engine import AutoImproveEngine, PipelineEvent
 
+try:
+    from ui.i18n import tr
+except ImportError:
+    def tr(s): return s
+
 
 class PipelineWorkerSignals(QObject):
     event_received = pyqtSignal(object)   # PipelineEvent
@@ -70,7 +75,7 @@ class IterationCard(QFrame):
         self._lbl_num.setFixedWidth(30)
         self._lbl_num.setStyleSheet("color:#7AA2F7;font-weight:bold;font-size:13px;")
 
-        self._lbl_status = QLabel("● запуск...")
+        self._lbl_status = QLabel(tr("● запуск..."))
         self._lbl_status.setStyleSheet("color:#E0AF68;font-size:12px;")
         self._lbl_status.setFixedWidth(140)
 
@@ -99,7 +104,7 @@ class IterationCard(QFrame):
 
     def update_patches(self, applied: int, failed: int, rolled_back: bool):
         if rolled_back:
-            text = "↩ откат"
+            text = tr("↩ откат")
             color = "#F7768E"
         else:
             text = f"+{applied} патчей"
@@ -152,7 +157,7 @@ class AutoRunPanel(QWidget):
         status_bar.setFixedHeight(40)
         sl = QHBoxLayout(status_bar); sl.setContentsMargins(12, 0, 12, 0)
 
-        self._lbl_pipeline_name = QLabel("Нет активного пайплайна")
+        self._lbl_pipeline_name = QLabel(tr("Нет активного пайплайна"))
         self._lbl_pipeline_name.setStyleSheet("color:#CDD6F4;font-size:13px;font-weight:bold;")
         sl.addWidget(self._lbl_pipeline_name)
 
@@ -166,11 +171,11 @@ class AutoRunPanel(QWidget):
         self._lbl_elapsed.setStyleSheet("color:#565f89;font-size:12px;font-family:monospace;")
         sl.addWidget(self._lbl_elapsed)
 
-        self._lbl_status = QLabel("○ Ожидание")
+        self._lbl_status = QLabel(tr("○ Ожидание"))
         self._lbl_status.setStyleSheet("color:#565f89;font-size:12px;")
         sl.addWidget(self._lbl_status)
 
-        self._btn_stop = QPushButton("■ Остановить")
+        self._btn_stop = QPushButton(tr("■ Остановить"))
         self._btn_stop.setObjectName("dangerBtn")
         self._btn_stop.setFixedWidth(120)
         self._btn_stop.setEnabled(False)
@@ -184,8 +189,7 @@ class AutoRunPanel(QWidget):
         self._progress.setFixedHeight(3)
         self._progress.setTextVisible(False)
         self._progress.setStyleSheet(
-            "QProgressBar { background:#1E2030; border:none; }"
-            "QProgressBar::chunk { background:#3D59A1; }"
+            "QProgressBar { background:#1E2030; border:none; }QProgressBar::chunk { background:#3D59A1; }"
         )
         self._progress.setValue(0)
         layout.addWidget(self._progress)
@@ -200,7 +204,7 @@ class AutoRunPanel(QWidget):
 
         iter_hdr = QFrame(); iter_hdr.setObjectName("panelHeader"); iter_hdr.setFixedHeight(28)
         ih_l = QHBoxLayout(iter_hdr); ih_l.setContentsMargins(12, 0, 12, 0)
-        lbl_i = QLabel("ИТЕРАЦИИ"); lbl_i.setObjectName("sectionLabel")
+        lbl_i = QLabel(tr("ИТЕРАЦИИ")); lbl_i.setObjectName("sectionLabel")
         self._lbl_iter_count = QLabel("0 / 0")
         self._lbl_iter_count.setStyleSheet("color:#565f89;font-size:11px;")
         ih_l.addWidget(lbl_i); ih_l.addStretch(); ih_l.addWidget(self._lbl_iter_count)
@@ -222,7 +226,7 @@ class AutoRunPanel(QWidget):
         stats_frame.setStyleSheet("background:#0A0D14;border-top:1px solid #1E2030;")
         stats_frame.setFixedHeight(60)
         sf_l = QVBoxLayout(stats_frame); sf_l.setContentsMargins(12, 6, 12, 6); sf_l.setSpacing(4)
-        self._lbl_stats1 = QLabel("Патчей применено: 0  |  Откатов: 0")
+        self._lbl_stats1 = QLabel(tr("Патчей применено: 0  |  Откатов: 0"))
         self._lbl_stats1.setStyleSheet("color:#A9B1D6;font-size:11px;")
         self._lbl_stats2 = QLabel("")
         self._lbl_stats2.setStyleSheet("color:#565f89;font-size:10px;")
@@ -234,9 +238,9 @@ class AutoRunPanel(QWidget):
 
         # Right: tabbed output
         right_tabs = QTabWidget()
-        right_tabs.addTab(self._build_live_log_tab(), "📡 Лайв-лог")
-        right_tabs.addTab(self._build_ai_tab(),       "🤖 AI анализ")
-        right_tabs.addTab(self._build_patches_tab(),  "✂️ Патчи")
+        right_tabs.addTab(self._build_live_log_tab(), tr("📡 Лайв-лог"))
+        right_tabs.addTab(self._build_ai_tab(),       tr("🤖 AI анализ"))
+        right_tabs.addTab(self._build_patches_tab(),  tr("✂️ Патчи"))
         self._right_tabs = right_tabs
         main_split.addWidget(right_tabs)
         main_split.setSizes([330, 700])
@@ -254,8 +258,8 @@ class AutoRunPanel(QWidget):
         self._live_log.setMaximumBlockCount(5000)
 
         btn_row = QHBoxLayout()
-        btn_clr = QPushButton("Очистить"); btn_clr.clicked.connect(self._live_log.clear)
-        self._chk_autoscroll = QPushButton("↓ Автоскролл")
+        btn_clr = QPushButton(tr("Очистить")); btn_clr.clicked.connect(self._live_log.clear)
+        self._chk_autoscroll = QPushButton(tr("↓ Автоскролл"))
         self._chk_autoscroll.setCheckable(True); self._chk_autoscroll.setChecked(True)
         self._chk_autoscroll.setFixedWidth(110)
         btn_row.addStretch(); btn_row.addWidget(self._chk_autoscroll); btn_row.addWidget(btn_clr)
@@ -321,7 +325,7 @@ class AutoRunPanel(QWidget):
     def _stop_pipeline(self):
         self._engine.cancel()
         self._btn_stop.setEnabled(False)
-        self._set_status("⏹ Остановка...", "#E0AF68")
+        self._set_status(tr("⏹ Остановка..."), "#E0AF68")
 
     # ── Event Handlers ─────────────────────────────────────
 
@@ -330,7 +334,7 @@ class AutoRunPanel(QWidget):
         d = evt.data
 
         if t == "pipeline_start":
-            self._set_status("▶ Запуск", "#9ECE6A")
+            self._set_status(tr("▶ Запуск"), "#9ECE6A")
             self._progress.setMaximum(d.get("max_iterations", 10))
 
         elif t == "iteration_start":
@@ -381,7 +385,7 @@ class AutoRunPanel(QWidget):
             count = d.get("patches_found", 0)
             msg = f"🤖 AI: найдено {count} патч(ей)"
             if d.get("has_goal_signal"):
-                msg += " • ЦЕЛЬ ДОСТИГНУТА"
+                msg += tr(" • ЦЕЛЬ ДОСТИГНУТА")
             self._log_system(msg, "#9ECE6A")
 
         elif t == "patch_applied":
@@ -402,7 +406,7 @@ class AutoRunPanel(QWidget):
         elif t == "rollback":
             self._log_system(f"↩ Откат: {d.get('reason','')}", "#F7768E")
             if self._current_card:
-                self._current_card.update_status("↩ Откат", "#F7768E")
+                self._current_card.update_status(tr("↩ Откат"), "#F7768E")
 
         elif t == "rollback_file":
             self._log_system(f"  ↩ Файл восстановлен: {d['file']}", "#E0AF68")
@@ -412,9 +416,9 @@ class AutoRunPanel(QWidget):
             if self._current_card:
                 success = d["success"] and not d["rolled_back"]
                 c = "#9ECE6A" if success else "#F7768E"
-                status_txt = "✓ Успешно" if success else ("↩ Откат" if d["rolled_back"] else "⚠ Ошибки")
+                status_txt = tr("✓ Успешно") if success else (tr("↩ Откат") if d["rolled_back"] else tr("⚠ Ошибки"))
                 if d.get("goal_achieved"):
-                    status_txt = "🎯 Цель!"
+                    status_txt = tr("🎯 Цель!")
                 self._current_card.update_status(status_txt, c)
                 self._current_card.update_patches(
                     d["patches_applied"], 0, d["rolled_back"])
@@ -431,7 +435,7 @@ class AutoRunPanel(QWidget):
         self._timer.stop()
         self._btn_stop.setEnabled(False)
 
-        stop = run.stop_reason or "Завершён"
+        stop = run.stop_reason or tr("Завершён")
         total_patches = run.total_patches_applied
         self._set_status(f"✓ Завершён: {stop}", "#9ECE6A")
         self._log_system(

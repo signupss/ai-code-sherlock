@@ -3,11 +3,17 @@ Patch Preview Dialog — before/after diff with syntax highlight.
 """
 from __future__ import annotations
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QSyntaxHighlighter
+from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QTextEdit, QSplitter, QFrame, QWidget
+    QPushButton, QTextEdit, QSplitter, QWidget
 )
+
+try:
+    from ui.i18n import tr, register_listener
+except ImportError:
+    def tr(s): return s
+    def register_listener(cb): pass
 
 
 class PatchPreviewDialog(QDialog):
@@ -15,11 +21,28 @@ class PatchPreviewDialog(QDialog):
     def __init__(self, search_content: str, replace_content: str,
                  file_path: str = "", parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Предпросмотр патча — {file_path or 'patch'}")
+        self._file_path = file_path
+        self.setWindowTitle(f"{tr('Предпросмотр патча')} — {file_path or 'patch'}")
         self.setMinimumSize(800, 500)
         self.resize(900, 600)
         self.setModal(True)
         self._build_ui(search_content, replace_content, file_path)
+        register_listener(self._retranslate)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        try:
+            from ui.theme_manager import apply_dark_titlebar
+            apply_dark_titlebar(self)
+        except Exception:
+            pass
+
+    def _retranslate(self, _lang: str = ""):
+        self.setWindowTitle(f"{tr('Предпросмотр патча')} — {self._file_path or 'patch'}")
+        self._title_lbl.setText(tr("📋 Предпросмотр изменений"))
+        self._before_hdr.setText(tr("ПОИСК (удаляемый код)"))
+        self._after_hdr.setText(tr("ЗАМЕНА (новый код)"))
+        self._btn_close.setText(tr("Закрыть"))
 
     def _build_ui(self, search: str, replace: str, file_path: str):
         layout = QVBoxLayout(self)
@@ -28,9 +51,9 @@ class PatchPreviewDialog(QDialog):
 
         # Header
         hdr = QHBoxLayout()
-        title = QLabel("📋 Предпросмотр изменений")
-        title.setObjectName("titleLabel")
-        hdr.addWidget(title)
+        self._title_lbl = QLabel(tr("📋 Предпросмотр изменений"))
+        self._title_lbl.setObjectName("titleLabel")
+        hdr.addWidget(self._title_lbl)
         hdr.addStretch()
         if file_path:
             fp_label = QLabel(f"📄 {file_path}")
@@ -46,8 +69,8 @@ class PatchPreviewDialog(QDialog):
         delta_color = "#9ECE6A" if delta >= 0 else "#F7768E"
 
         stats = QHBoxLayout()
-        stats.addWidget(self._badge(f"− {search_lines} строк", "#F7768E", "#2D1A1A"))
-        stats.addWidget(self._badge(f"+ {replace_lines} строк", "#9ECE6A", "#1A2D1A"))
+        stats.addWidget(self._badge(f"− {search_lines} {tr('строк')}", "#F7768E", "#2D1A1A"))
+        stats.addWidget(self._badge(f"+ {replace_lines} {tr('строк')}", "#9ECE6A", "#1A2D1A"))
         stats.addWidget(self._badge(f"Δ {delta_str}", delta_color, "#1A1A2D"))
         stats.addStretch()
         layout.addLayout(stats)
@@ -60,10 +83,10 @@ class PatchPreviewDialog(QDialog):
         before_l = QVBoxLayout(before_w)
         before_l.setContentsMargins(0, 0, 0, 0)
         before_l.setSpacing(4)
-        before_hdr = QLabel("ПОИСК (удаляемый код)")
-        before_hdr.setObjectName("sectionLabel")
-        before_hdr.setStyleSheet("color: #F7768E; letter-spacing: 1px;")
-        before_l.addWidget(before_hdr)
+        self._before_hdr = QLabel(tr("ПОИСК (удаляемый код)"))
+        self._before_hdr.setObjectName("sectionLabel")
+        self._before_hdr.setStyleSheet("color: #F7768E; letter-spacing: 1px;")
+        before_l.addWidget(self._before_hdr)
         self._before_view = QTextEdit()
         self._before_view.setObjectName("diffSearch")
         self._before_view.setReadOnly(True)
@@ -77,10 +100,10 @@ class PatchPreviewDialog(QDialog):
         after_l = QVBoxLayout(after_w)
         after_l.setContentsMargins(0, 0, 0, 0)
         after_l.setSpacing(4)
-        after_hdr = QLabel("ЗАМЕНА (новый код)")
-        after_hdr.setObjectName("sectionLabel")
-        after_hdr.setStyleSheet("color: #9ECE6A; letter-spacing: 1px;")
-        after_l.addWidget(after_hdr)
+        self._after_hdr = QLabel(tr("ЗАМЕНА (новый код)"))
+        self._after_hdr.setObjectName("sectionLabel")
+        self._after_hdr.setStyleSheet("color: #9ECE6A; letter-spacing: 1px;")
+        after_l.addWidget(self._after_hdr)
         self._after_view = QTextEdit()
         self._after_view.setObjectName("diffReplace")
         self._after_view.setReadOnly(True)
@@ -94,10 +117,10 @@ class PatchPreviewDialog(QDialog):
         # Footer
         footer = QHBoxLayout()
         footer.addStretch()
-        btn_close = QPushButton("Закрыть")
-        btn_close.setFixedWidth(100)
-        btn_close.clicked.connect(self.accept)
-        footer.addWidget(btn_close)
+        self._btn_close = QPushButton(tr("Закрыть"))
+        self._btn_close.setFixedWidth(100)
+        self._btn_close.clicked.connect(self.accept)
+        footer.addWidget(self._btn_close)
         layout.addLayout(footer)
 
     @staticmethod

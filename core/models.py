@@ -246,6 +246,16 @@ class AppSettings:
     theme: str = "dark"
     recent_projects: dict[str, str] = field(default_factory=dict)
     window_geometry: Optional[dict] = None
+    # Context & token settings
+    compress_context: bool = True
+    max_conversation_history: int = 12
+    include_full_logs: bool = False
+    max_file_chars: int = 6000
+    max_log_chars: int = 8000
+    # Appearance
+    accent_color: str = "#7AA2F7"   # primary accent (buttons, highlights)
+    ui_font_size: int = 11          # global UI font point size
+    language: str = "ru"            # "ru" | "en"
 
     def to_dict(self) -> dict:
         return {
@@ -258,6 +268,14 @@ class AppSettings:
             "theme": self.theme,
             "recent_projects": self.recent_projects,
             "window_geometry": self.window_geometry,
+            "compress_context": self.compress_context,
+            "max_conversation_history": self.max_conversation_history,
+            "include_full_logs": self.include_full_logs,
+            "max_file_chars": self.max_file_chars,
+            "max_log_chars": self.max_log_chars,
+            "accent_color": self.accent_color,
+            "ui_font_size": self.ui_font_size,
+            "language": self.language,
         }
 
     @classmethod
@@ -272,4 +290,12 @@ class AppSettings:
             theme=d.get("theme", "dark"),
             recent_projects=d.get("recent_projects", {}),
             window_geometry=d.get("window_geometry"),
+            compress_context=d.get("compress_context", True),
+            max_conversation_history=d.get("max_conversation_history", 12),
+            include_full_logs=d.get("include_full_logs", False),
+            max_file_chars=d.get("max_file_chars", 6000),
+            max_log_chars=d.get("max_log_chars", 8000),
+            accent_color=d.get("accent_color", "#7AA2F7"),
+            ui_font_size=d.get("ui_font_size", 11),
+            language=d.get("language", "ru"),
         )

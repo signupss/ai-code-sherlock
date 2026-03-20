@@ -1,0 +1,90 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+pip-wheel-metadata/
+*.manifest
+*.spec
+MANIFEST
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.local
+.env.*.local
+pythonenv*/
+
+# ── AI Code Sherlock — generated at runtime ───────────────────────────────────
+# Version backups (created automatically when patches are applied)
+.sherlock_versions/
+
+# Project state files (per-project, auto-generated)
+project_state.json
+error_map.json
+
+# Signal folders (ZennoPoster IPC)
+signals/
+
+# Script output files
+*.log
+output/
+outputs/
+
+# ── Sensitive data ─────────────────────────────────────────────────────────────
+# Settings with API keys — stored in ~/.ai_code_sherlock/settings.json (outside repo)
+settings.json
+*.api_key
+secrets.json
+config.local.json
+
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ── Packaging ─────────────────────────────────────────────────────────────────
+*.whl
+*.tar.gz
+*.zip
+
+# ── Windows build artifacts ───────────────────────────────────────────────────
+*.exe
+*.msi
+dist_windows/

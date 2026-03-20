@@ -1,3 +1,26 @@
+# ── Core dependencies (required) ──────────────────────────────────────────────
 PyQt6>=6.6.0
 aiohttp>=3.9.0
 aiofiles>=23.2.0
+
+# ── Optional: Excel file reading (.xlsx / .xls) ───────────────────────────────
+# pip install openpyxl
+# openpyxl>=3.1.0
+
+# ── Optional: Parquet / Feather / CSV analytics ───────────────────────────────
+# pip install pandas pyarrow
+# pandas>=2.0.0
+# pyarrow>=14.0.0
+
+# ── Optional: NumPy array files (.npy / .npz) ─────────────────────────────────
+# pip install numpy
+# numpy>=1.26.0
+
+# ── Optional: HDF5 model files (.h5 / .hdf5) ─────────────────────────────────
+# pip install h5py
+# h5py>=3.10.0
+
+# ── Optional: Testing ─────────────────────────────────────────────────────────
+# pip install pytest pytest-asyncio
+# pytest>=7.4.0
+# pytest-asyncio>=0.23.0
