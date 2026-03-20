@@ -9,7 +9,7 @@
 [![PyQt6](https://img.shields.io/badge/UI-PyQt6-green.svg)](https://pypi.org/project/PyQt6/)
 [![Ollama](https://img.shields.io/badge/AI-Ollama%20%7C%20OpenAI%20%7C%20API-purple.svg)](https://ollama.ai)
 
-[🌐 Website](https://ai-code-sherlock-site.vercel.app) · [⬇ Download](https://github.com/signupss/ai-code-sherlock/releases/latest) · [📖 Docs](#-quick-start) · [🐛 Issues](https://github.com/signupss/ai-code-sherlock/issues)
+[🌐 Website](https://codesherlock.dev/) · [⬇ Download](https://github.com/signupss/ai-code-sherlock/releases/latest) · [📖 Docs](#-quick-start) · [🐛 Issues](https://github.com/signupss/ai-code-sherlock/issues)
 
 ![AI Code Sherlock Screenshot](screenshot.png)
 
