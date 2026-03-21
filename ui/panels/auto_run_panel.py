@@ -256,6 +256,8 @@ class AutoRunPanel(QWidget):
         self._live_log.setObjectName("logView")
         self._live_log.setFont(QFont("JetBrains Mono,Cascadia Code,Consolas", 10))
         self._live_log.setMaximumBlockCount(5000)
+        self._live_log.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         btn_row = QHBoxLayout()
         btn_clr = QPushButton(tr("Очистить")); btn_clr.clicked.connect(self._live_log.clear)
@@ -270,21 +272,61 @@ class AutoRunPanel(QWidget):
 
     def _build_ai_tab(self) -> QWidget:
         w = QWidget()
-        layout = QVBoxLayout(w); layout.setContentsMargins(0, 0, 0, 0)
+        layout = QVBoxLayout(w); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
+
+        # Sub-tabs: Prompt sent | AI Response
+        self._ai_subtabs = QTabWidget()
+        self._ai_subtabs.setTabPosition(QTabWidget.TabPosition.North)
+
+        # Tab 1 — Prompt sent to AI
+        p1 = QWidget(); l1 = QVBoxLayout(p1); l1.setContentsMargins(0,0,0,0)
+        self._prompt_view = QPlainTextEdit()
+        self._prompt_view.setReadOnly(True)
+        self._prompt_view.setFont(QFont("JetBrains Mono,Cascadia Code,Consolas", 9))
+        self._prompt_view.setStyleSheet("background:#070A12;color:#9AA5CE;border:none;padding:6px;")
+        self._prompt_view.setPlaceholderText(tr("Промпт появится здесь когда AI начнёт анализ..."))
+        self._prompt_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        l1.addWidget(self._prompt_view)
+        self._ai_subtabs.addTab(p1, tr("📤 Промпт"))
+
+        # Tab 2 — Full AI response
+        p2 = QWidget(); l2 = QVBoxLayout(p2); l2.setContentsMargins(0,0,0,0)
         self._ai_view = QPlainTextEdit()
         self._ai_view.setReadOnly(True)
-        self._ai_view.setFont(QFont("Segoe UI,Arial", 12))
+        self._ai_view.setFont(QFont("Segoe UI,Arial", 11))
         self._ai_view.setStyleSheet("background:#0A0D14;color:#CDD6F4;border:none;padding:8px;")
-        layout.addWidget(self._ai_view)
+        self._ai_view.setPlaceholderText(tr("Ответ AI появится здесь после анализа..."))
+        self._ai_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        l2.addWidget(self._ai_view)
+        self._ai_subtabs.addTab(p2, tr("🤖 Ответ AI"))
+
+        layout.addWidget(self._ai_subtabs)
         return w
 
     def _build_patches_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w); layout.setContentsMargins(0, 0, 0, 0)
+
+        # Stats row
+        stats_row = QHBoxLayout(); stats_row.setContentsMargins(6,4,6,4)
+        self._patch_stat_lbl = QLabel(tr("Патчей применено: 0  |  Отказов: 0"))
+        self._patch_stat_lbl.setStyleSheet("color:#565F89;font-size:10px;")
+        btn_clr_p = QPushButton(tr("Очистить")); btn_clr_p.setFixedWidth(70)
+        btn_clr_p.clicked.connect(lambda: self._patches_view.clear())
+        stats_row.addWidget(self._patch_stat_lbl); stats_row.addStretch(); stats_row.addWidget(btn_clr_p)
+        layout.addLayout(stats_row)
+
         self._patches_view = QPlainTextEdit()
         self._patches_view.setReadOnly(True)
         self._patches_view.setFont(QFont("JetBrains Mono,Cascadia Code,Consolas", 10))
         self._patches_view.setObjectName("logView")
+        self._patches_view.setStyleSheet(
+            "background:#070A12;color:#CDD6F4;border:none;padding:4px;"
+        )
+        self._patches_view.setPlaceholderText(tr("Применённые патчи появятся здесь..."))
+        self._patches_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._patch_applied_count = 0
+        self._patch_failed_count = 0
         layout.addWidget(self._patches_view)
         return w
 
@@ -308,6 +350,11 @@ class AutoRunPanel(QWidget):
         self._iteration_cards.clear()
         self._live_log.clear()
         self._ai_view.clear()
+        self._prompt_view.clear()
+        self._patches_view.clear()
+        self._patch_applied_count = 0
+        self._patch_failed_count = 0
+        self._patch_stat_lbl.setText(tr("Патчей применено: 0  |  Отказов: 0"))
         self._patches_view.clear()
         self._progress.setValue(0)
 
@@ -381,6 +428,27 @@ class AutoRunPanel(QWidget):
             if self._current_card:
                 self._current_card.update_status(f"🤖 {d['message'][:20]}", "#7AA2F7")
 
+        elif t == "prompt_sent":
+            it = d.get("iteration", "?")
+            strat = d.get("strategy", "")
+            prompt_text = d.get("prompt", "")
+            header = f"═══ ПРОМПТ ИТЕРАЦИИ {it} [{strat}] ═══\n\n"
+            self._prompt_view.setPlainText(header + prompt_text)
+            self._ai_subtabs.setCurrentIndex(0)
+            # Log to main log
+            tok_est = len(prompt_text) // 4
+            self._log_system(f"📤 Промпт отправлен: ~{tok_est} токенов", "#565F89")
+
+        elif t == "ai_full_response":
+            it = d.get("iteration", "?")
+            resp = d.get("response", "")
+            header = f"═══ ОТВЕТ AI — ИТЕРАЦИЯ {it} ═══\n\n"
+            self._ai_view.setPlainText(header + resp)
+            self._ai_subtabs.setCurrentIndex(1)
+            # Log shortened response to main log
+            short = resp[:200].replace("\n", " ") + ("..." if len(resp) > 200 else "")
+            self._log_system(f"📥 AI ответил: {short}", "#7AA2F7")
+
         elif t == "ai_response":
             count = d.get("patches_found", 0)
             msg = f"🤖 AI: найдено {count} патч(ей)"
@@ -389,18 +457,46 @@ class AutoRunPanel(QWidget):
             self._log_system(msg, "#9ECE6A")
 
         elif t == "patch_applied":
+            lines_ch = d.get("lines_changed", 0)
+            sign = "+" if lines_ch >= 0 else ""
             self._log_system(
-                f"✓ Патч → {d['file']} ({d.get('lines_changed', '?'):+d} строк)",
+                f"✓ Патч → {d['file']} ({sign}{lines_ch} строк)",
                 "#9ECE6A"
             )
-            self._patches_view.appendPlainText(
-                f"[{datetime.now().strftime('%H:%M:%S')}] Применён к {d['file']}\n"
+            self._patch_applied_count += 1
+            self._patch_stat_lbl.setText(
+                f"Патчей применено: {self._patch_applied_count}  |  Отказов: {self._patch_failed_count}"
+            )
+            # Show diff in patches tab
+            ts = datetime.now().strftime("%H:%M:%S")
+            search = d.get("search", "")
+            replace = d.get("replace", "")
+            sep = "─" * 60
+            sep2 = "═" * 60
+            diff_text = (
+                f"[{ts}] ПРИМЕНЁН -> {d.get('file_path', d['file'])} ({sign}{lines_ch} str)\n"
+                f"{sep}\n"
+                f"BYLO (SEARCH):\n{search}\n"
+                f"{sep}\n"
+                f"STALO (REPLACE):\n{replace}\n"
+                f"{sep2}\n\n"
+            )
+            self._patches_view.appendPlainText(diff_text)
+            # Auto-scroll patches
+            self._patches_view.verticalScrollBar().setValue(
+                self._patches_view.verticalScrollBar().maximum()
             )
 
         elif t == "patch_failed":
-            self._log_system(f"✗ Патч не применён: {d.get('reason','?')[:60]}", "#F7768E")
+            reason = d.get("reason", "?")
+            self._log_system(f"✗ Патч не применён: {reason[:80]}", "#F7768E")
+            self._patch_failed_count += 1
+            self._patch_stat_lbl.setText(
+                f"Патчей применено: {self._patch_applied_count}  |  Отказов: {self._patch_failed_count}"
+            )
+            ts = datetime.now().strftime("%H:%M:%S")
             self._patches_view.appendPlainText(
-                f"[{datetime.now().strftime('%H:%M:%S')}] НЕУДАЧА: {d.get('reason','?')}\n"
+                f"[{ts}] NEUDACHA: {reason}\n" + ("\u2500" * 60) + "\n\n"
             )
 
         elif t == "rollback":
@@ -445,11 +541,13 @@ class AutoRunPanel(QWidget):
         )
         self._progress.setValue(self._progress.maximum())
 
-        # Show last AI analysis
+        # Show last AI analysis and prompt in tabs
         if run.iterations:
             last = run.iterations[-1]
-            self._ai_view.setPlainText(last.ai_analysis)
+            if last.ai_analysis and not self._ai_view.toPlainText().strip():
+                self._ai_view.setPlainText("═══ ФИНАЛЬНЫЙ ОТВЕТ AI ═══\n\n" + last.ai_analysis)
             self._right_tabs.setCurrentIndex(1)
+            self._ai_subtabs.setCurrentIndex(1)
 
         self._update_stats()
         self.status_changed.emit(f"Pipeline завершён: {stop}")

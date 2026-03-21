@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit, QTabWidget, QFrame, QFileDialog,
     QCheckBox, QMessageBox, QScrollArea, QSizePolicy, QProgressBar,
     QMenu, QApplication, QSpinBox, QGroupBox,
-    QListWidget, QListWidgetItem, QDialog, QDialogButtonBox
+    QListWidget, QListWidgetItem, QDialog, QDialogButtonBox, QLineEdit
 )
 
 from core.models import (
@@ -62,6 +62,8 @@ class AiWorkerSignals(QObject):
     error       = pyqtSignal(str)
     status      = pyqtSignal(str)
     new_variant = pyqtSignal(int, int)   # current, total — open a new bubble
+    script_line = pyqtSignal(str, str)   # line, stream ("OUT"/"ERR"/"SYS")
+    script_done = pyqtSignal(str, bool)  # summary, success
 
 
 class AiWorker(QRunnable):
@@ -495,20 +497,69 @@ class MainWindow(QMainWindow):
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         self._log_view = QPlainTextEdit()
         self._log_view.setObjectName("logView")
         self._log_view.setReadOnly(True)
-        self._log_view.setMaximumBlockCount(5000)
+        self._log_view.setMaximumBlockCount(10000)
         self._log_view.setFont(QFont("JetBrains Mono,Cascadia Code,Consolas", 10))
+        self._log_view.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
         btn_row = QHBoxLayout()
-        btn_clr = QPushButton(tr("Очистить")); btn_clr.clicked.connect(self._log_view.clear)
-        btn_copy = QPushButton(tr("📋 Копировать")); btn_copy.clicked.connect(self._copy_logs)
-        btn_row.addStretch(); btn_row.addWidget(btn_copy); btn_row.addWidget(btn_clr)
+        btn_row.setContentsMargins(6, 4, 6, 4)
+        btn_clr  = QPushButton(tr("Очистить"))
+        btn_clr.clicked.connect(self._log_view.clear)
+        btn_copy = QPushButton(tr("📋 Копировать"))
+        btn_copy.clicked.connect(self._copy_logs)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_copy)
+        btn_row.addWidget(btn_clr)
+
+        # ── Interactive stdin row ──────────────────────────
+        stdin_frame = QFrame()
+        stdin_frame.setFixedHeight(36)
+        stdin_frame.setStyleSheet(
+            "QFrame { background:#0A0D14; border-top: 1px solid #1E2030; }"
+        )
+        stdin_layout = QHBoxLayout(stdin_frame)
+        stdin_layout.setContentsMargins(8, 4, 8, 4)
+        stdin_layout.setSpacing(6)
+
+        stdin_lbl = QLabel("↳")
+        stdin_lbl.setStyleSheet("color:#565f89; font-size:14px;")
+        stdin_layout.addWidget(stdin_lbl)
+
+        self._stdin_input = QLineEdit()
+        self._stdin_input.setPlaceholderText(
+            tr("Ввод для запущенного скрипта... (Enter — отправить)"))
+        self._stdin_input.setStyleSheet(
+            "QLineEdit { background:#111520; border:1px solid #2E3148;"
+            " border-radius:4px; color:#CDD6F4;"
+            " font-family: 'JetBrains Mono',Consolas; font-size:11px;"
+            " padding:2px 8px; }"
+            "QLineEdit:focus { border-color:#7AA2F7; }"
+            "QLineEdit:disabled { color:#3B4261; border-color:#1E2030; }"
+        )
+        self._stdin_input.setEnabled(False)
+        self._stdin_input.returnPressed.connect(self._send_script_stdin)
+        stdin_layout.addWidget(self._stdin_input, stretch=1)
+
+        btn_stdin_send = QPushButton("⏎")
+        btn_stdin_send.setFixedWidth(32)
+        btn_stdin_send.setToolTip(tr("Отправить ввод скрипту"))
+        btn_stdin_send.setStyleSheet(
+            "QPushButton { background:#1A2030; border:1px solid #2E3148;"
+            " border-radius:4px; color:#7AA2F7; font-size:14px; }"
+            "QPushButton:hover { background:#252040; border-color:#7AA2F7; }"
+        )
+        btn_stdin_send.clicked.connect(self._send_script_stdin)
+        stdin_layout.addWidget(btn_stdin_send)
 
         layout.addWidget(self._log_view, stretch=1)
         layout.addLayout(btn_row)
+        layout.addWidget(stdin_frame)
         return w
 
     def _build_context_tab(self) -> QWidget:
@@ -538,6 +589,7 @@ class MainWindow(QMainWindow):
         self._ctx_detail.setObjectName("logView")
         self._ctx_detail.setFont(QFont("JetBrains Mono,Cascadia Code,Consolas", 10))
         self._ctx_detail.setPlaceholderText(tr("Открой файл и отправь запрос для построения контекста..."))
+        self._ctx_detail.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         layout.addWidget(self._ctx_detail, stretch=1)
 
         return w
@@ -574,6 +626,7 @@ class MainWindow(QMainWindow):
         self._signal_log.setFont(QFont("JetBrains Mono,Cascadia Code,Consolas", 10))
         self._signal_log.setMaximumBlockCount(500)
         self._signal_log.setPlaceholderText(tr("События файловых сигналов появятся здесь..."))
+        self._signal_log.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         layout.addWidget(self._signal_log, stretch=1)
 
         # Stats row
@@ -1218,6 +1271,8 @@ class MainWindow(QMainWindow):
         ws.error.connect(self._on_ai_error)
         ws.status.connect(self._on_status_update)
         ws.new_variant.connect(self._on_new_variant)
+        ws.script_line.connect(self._on_script_line)
+        ws.script_done.connect(self._on_script_done)
 
         self._logger.subscribe(self._on_log_entry)
 
@@ -1579,7 +1634,17 @@ class MainWindow(QMainWindow):
             self._chat_scroll.verticalScrollBar().setValue(
                 self._chat_scroll.verticalScrollBar().maximum())
 
-    def _on_ai_finished(self, _full: str):
+    def _on_ai_finished(self, full: str):
+        # If the streaming bubble is empty (AI sent nothing useful), show a fallback message
+        if self._current_stream_edit is not None:
+            current_text = self._current_stream_edit.toPlainText().strip()
+            if not current_text and full.strip():
+                # Response came through finished signal but not through chunk — display it now
+                from PyQt6.QtGui import QTextCursor
+                cursor = self._current_stream_edit.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                cursor.insertText(full.strip())
+                self._current_stream_edit.setTextCursor(cursor)
         self._current_stream_edit = None
         self._set_processing(False)
 
@@ -2542,9 +2607,10 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _run_script_manually(self):
-        """Run any script manually — streams live log, saves for AI post-analysis."""
+        """Run any script manually — streams live log to Logs tab, supports interactive stdin."""
         from PyQt6.QtWidgets import QFileDialog
-        # Prefer active file if it's a runnable script
+        from datetime import datetime as _dt
+
         start_dir = "."
         if self._project_mgr.state:
             start_dir = self._project_mgr.state.project_root
@@ -2560,47 +2626,52 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        self._add_system_message(f"▶ {tr('Запуск скрипта')}: `{Path(path).name}`")
-        self._set_processing(True, f"Выполняю {Path(path).name}...")
-        self._center_tabs.setCurrentIndex(0)
+        script_name = Path(path).name
+
+        # ── Prepare Logs tab ──────────────────────────────
+        self._center_tabs.setCurrentIndex(1)  # switch to Logs tab
+
+        # Header separator in log view
+        ts = _dt.now().strftime("%H:%M:%S")
+        sep = "─" * 52
+        self._log_view.appendHtml(
+            f'<span style="color:#3B4261;font-family:monospace;font-size:11px;">'
+            f'{sep}</span>'
+        )
+        self._log_view.appendHtml(
+            f'<span style="color:#9D7CD8;font-family:monospace;font-size:12px;font-weight:bold;">'
+            f'▶ {script_name}  &nbsp; <span style="color:#565f89;font-size:10px;">{ts}</span>'
+            f'</span>'
+        )
+
+        # Enable interactive stdin
+        self._stdin_input.setEnabled(True)
+        self._stdin_input.setFocus()
+
+        # Start processing indicators WITHOUT creating a chat bubble
+        self._set_processing(True, f"{tr('Выполняю')} {script_name}...", create_bubble=False)
 
         signals = self._worker_signals
         script_path = str(path)
 
         async def _run_task():
-            from services.script_runner import ScriptRunner
-            from services.log_compressor import LogCompressor, CompressionConfig
-            runner = ScriptRunner(self._logger)
+            def _on_line(line: str, stream: str):
+                signals.script_line.emit(line, stream)
 
-            stdout_buf, stderr_buf = [], []
-
-            def _on_line(line, stream):
-                if stream == "OUT":
-                    stdout_buf.append(line)
-                else:
-                    stderr_buf.append(line)
-                signals.status.emit(line[:80] if line else "")
-
-            result = await runner.run_async(
+            result = await self._script_runner.run_async(
                 script_path=script_path,
                 timeout_seconds=3600,
                 on_line=_on_line,
             )
 
-            # Smart-compress log for AI context
-            lc = LogCompressor(CompressionConfig(max_output_chars=10000))
-            raw_log = result.combined_log or (result.stdout + "\n" + result.stderr)
-            compressed_log = lc.compress_for_ai(raw_log, Path(script_path).name)
-
-            status_icon = "✓" if result.success else f"✗ (код {result.exit_code})"
+            status_icon = "✓ OK" if result.success else f"✗ код {result.exit_code}"
+            if result.timed_out:
+                status_icon = "⏱ TIMEOUT"
             summary = (
-                f"## ▶ Запуск `{Path(script_path).name}` завершён — {status_icon}\n"
-                f"Время: {result.elapsed_seconds:.1f}с  "
-                f"{'| Timed out' if result.timed_out else ''}\n\n"
-                f"{compressed_log}\n\n"
-                "---\n_Log saved. You can ask AI about this run._"
+                f"{script_name} завершён — {status_icon}  "
+                f"({result.elapsed_seconds:.1f}с)"
             )
-            signals.finished.emit(summary)
+            signals.script_done.emit(summary, result.success)
 
         self._pool.start(AiWorker(_run_task, signals))
 
@@ -2735,24 +2806,77 @@ class MainWindow(QMainWindow):
     #  PROCESSING STATE
     # ══════════════════════════════════════════════════════
 
-    def _set_processing(self, active: bool, message: str = ""):
+    def _set_processing(self, active: bool, message: str = "", create_bubble: bool = True):
         self._is_processing = active
         self._btn_send.setEnabled(not active)
         self._lbl_processing.setVisible(active)
         self._btn_stop.setVisible(active)
         if active:
             self._lbl_processing.setText(f"⟳ {message}")
-            # Add streaming bubble
-            self._current_stream_edit = self._add_assistant_message_streaming()
-            # Switch to conversation tab
-            self._center_tabs.setCurrentIndex(0)
+            if create_bubble:
+                # Add streaming bubble and switch to conversation tab
+                self._current_stream_edit = self._add_assistant_message_streaming()
+                self._center_tabs.setCurrentIndex(0)
         else:
             self._lbl_status_left.setText(tr("Готов"))
 
     def _stop_processing(self):
         self._pool.clear()
+        self._script_runner.kill_current()
         self._set_processing(False)
+        self._stdin_input.setEnabled(False)
         self._add_system_message(tr("⏹ Операция остановлена"))
+
+    # ── Script output / stdin ──────────────────────────────
+
+    def _on_script_line(self, line: str, stream: str):
+        """Append one output line from a running script to the Logs tab."""
+        colors = {"OUT": "#CDD6F4", "ERR": "#F7768E", "SYS": "#BB9AF7"}
+        color  = colors.get(stream, "#CDD6F4")
+        safe   = (line.replace("&", "&amp;")
+                      .replace("<", "&lt;")
+                      .replace(">", "&gt;"))
+        self._log_view.appendHtml(
+            f'<span style="color:{color};font-family:monospace;font-size:11px;">'
+            f'{safe}</span>'
+        )
+        sb = self._log_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        # Show last line in status bar while running
+        if line.strip():
+            self._lbl_status_left.setText(line[:80])
+
+    def _on_script_done(self, summary: str, success: bool):
+        """Called when a manually-run script finishes."""
+        self._stdin_input.setEnabled(False)
+        icon  = "✅" if success else "❌"
+        color = "#9ECE6A" if success else "#F7768E"
+        safe  = summary.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        self._log_view.appendHtml(
+            f'<span style="color:{color};font-family:monospace;font-size:12px;">'
+            f'{icon} {safe}</span>'
+        )
+        self._log_view.appendHtml(
+            '<span style="color:#3B4261;font-family:monospace;font-size:11px;">'
+            '─' * 52 + '</span>'
+        )
+        sb = self._log_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        self._set_processing(False)
+
+    def _send_script_stdin(self):
+        """Send text from the Logs-tab stdin field to the running script."""
+        text = self._stdin_input.text().strip()
+        if not text:
+            return
+        self._stdin_input.clear()
+        self._script_runner.send_stdin(text + "\n")
+        # Echo input to log
+        safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        self._log_view.appendHtml(
+            f'<span style="color:#E0AF68;font-family:monospace;font-size:11px;">'
+            f'&gt;&gt; {safe}</span>'
+        )
 
     # ══════════════════════════════════════════════════════
     #  WINDOW LIFECYCLE

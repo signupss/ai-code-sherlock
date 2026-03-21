@@ -178,6 +178,18 @@ class PipelineDialog(QDialog):
         self._chk_auto_rollback = QCheckBox(tr("Автооткат при синтаксической ошибке"))
         self._chk_auto_rollback.setChecked(True)
         sf.addRow("", self._chk_auto_rollback)
+        self._cmb_patch_mode = QComboBox()
+        self._cmb_patch_mode.addItem(tr("⚡ Сразу (Primary → AI → Apply → Validators)"), "immediate")
+        self._cmb_patch_mode.addItem(tr("🔒 Валидаторы до AI (Primary → Validators → AI → Apply)"), "after_val")
+        self._cmb_patch_mode.addItem(tr("🔍 Валидаторы первыми (Validators → Primary → AI → Apply)"), "val_first")
+        self._cmb_patch_mode.addItem(tr("🧠 Полный анализ (Primary → Validators → AI → Apply)"), "all_then_ai")
+        self._cmb_patch_mode.setToolTip(tr(
+            "⚡ Сразу: основной скрипт → AI → патч → валидаторы\n"
+            "🔒 Валидаторы до AI: основной → валидаторы → AI видит оба лога → патч\n"
+            "🔍 Валидаторы первыми: сначала валидаторы → если OK → основной скрипт → AI → патч\n"
+            "🧠 Полный анализ: основной скрипт + ВСЕ валидаторы → AI анализирует всё → патч"
+        ))
+        sf.addRow(tr("Режим патчинга:"), self._cmb_patch_mode)
         self._spn_retry = QSpinBox()
         self._spn_retry.setRange(0, 10); self._spn_retry.setValue(2)
         sf.addRow(tr("Повторов при неудаче:"), self._spn_retry)
@@ -965,6 +977,11 @@ class PipelineDialog(QDialog):
         self._spn_iterations.setValue(cfg.max_iterations)
         self._chk_auto_apply.setChecked(cfg.auto_apply_patches)
         self._chk_auto_rollback.setChecked(cfg.auto_rollback_on_error)
+        mode = getattr(cfg, "patch_mode", "immediate")
+        for i in range(self._cmb_patch_mode.count()):
+            if self._cmb_patch_mode.itemData(i) == mode:
+                self._cmb_patch_mode.setCurrentIndex(i)
+                break
         self._spn_retry.setValue(cfg.retry_on_patch_failure)
         sidx = next((i for i in range(self._cmb_strategy.count())
                      if self._cmb_strategy.itemData(i) == cfg.ai_strategy.value), 1)
@@ -994,6 +1011,7 @@ class PipelineDialog(QDialog):
         cfg.max_iterations = self._spn_iterations.value()
         cfg.auto_apply_patches = self._chk_auto_apply.isChecked()
         cfg.auto_rollback_on_error = self._chk_auto_rollback.isChecked()
+        cfg.patch_mode = self._cmb_patch_mode.currentData() or "immediate"
         cfg.retry_on_patch_failure = self._spn_retry.value()
         cfg.ai_strategy = AIStrategy(self._cmb_strategy.currentData())
         cfg.strategy_switch_after = self._spn_strategy_switch.value()

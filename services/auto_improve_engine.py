@@ -99,6 +99,358 @@ STRATEGY_PROMPTS = {
 }
 
 
+
+import re as _re
+
+# ── Character sets ────────────────────────────────────────────────────────────
+_VOWELS_EN = frozenset('aeiouAEIOU')
+_VOWELS_RU = frozenset('аеёиоуыэюяАЕЁИОУЫЭЮЯ')
+_VOWELS = _VOWELS_EN | _VOWELS_RU
+
+def _is_vowel(ch: str) -> bool:
+    return ch in _VOWELS
+
+# ── Hand-curated abbreviation dictionary (≥5 chars only) ─────────────────────
+_KNOWN: dict[str, str] = {
+    # ── General / universal ───────────────────────────────────────
+    'error':            'err',    'errors':          'errs',
+    'warning':          'warn',   'warnings':        'warns',
+    'debug':            'dbg',    'trace':           'trc',
+    'critical':         'crit',   'fatal':           'fatal',
+    'information':      'info',   'message':         'msg',
+    'messages':         'msgs',   'output':          'out',
+    'input':            'in',     'result':          'res',
+    'results':          'res',    'status':          'stat',
+    'success':          'ok',     'successfully':    'ok',
+    'failure':          'fail',   'failed':          'fail',
+    'complete':         'done',   'completed':       'done',
+    'running':          'run',    'started':         'start',
+    'stopped':          'stop',   'finished':        'fin',
+    'loading':          'load',   'saving':          'save',
+    'reading':          'read',   'writing':         'write',
+    'creating':         'creat',  'deleting':        'del',
+    'updating':         'upd',    'checking':        'chk',
+    'skipping':         'skip',   'retrying':        'retry',
+    # ── Code structure ────────────────────────────────────────────
+    'function':         'fn',     'functions':       'fns',
+    'method':           'mth',    'methods':         'mths',
+    'class':            'cls',    'object':          'obj',
+    'objects':          'objs',   'instance':        'inst',
+    'attribute':        'attr',   'attributes':      'attrs',
+    'parameter':        'param',  'parameters':      'params',
+    'argument':         'arg',    'arguments':       'args',
+    'variable':         'var',    'variables':       'vars',
+    'exception':        'exc',    'exceptions':      'excs',
+    'interface':        'ifc',    'implementation':  'impl',
+    'abstract':         'abs',    'module':          'mod',
+    'package':          'pkg',    'library':         'lib',
+    'component':        'comp',   'service':         'svc',
+    'handler':          'hdlr',   'middleware':      'mw',
+    'callback':         'cb',     'listener':        'lstnr',
+    'constructor':      'ctor',   'destructor':      'dtor',
+    'prototype':        'proto',  'reference':       'ref',
+    'pointer':          'ptr',    'buffer':          'buf',
+    'context':          'ctx',    'environment':     'env',
+    'configuration':    'cfg',    'settings':        'cfg',
+    'directory':        'dir',    'temporary':       'tmp',
+    'initialize':       'init',   'initialized':     'init',
+    'initialization':   'init',
+    # ── Types ─────────────────────────────────────────────────────
+    'boolean':          'bool',   'integer':         'int',
+    'string':           'str',    'character':       'char',
+    'sequence':         'seq',    'collection':      'coll',
+    'dictionary':       'dict',   'structure':       'struct',
+    'undefined':        'undef',  'nullable':        'null',
+    # ── Math / ML ─────────────────────────────────────────────────
+    'maximum':          'max',    'minimum':         'min',
+    'average':          'avg',    'number':          'num',
+    'count':            'cnt',    'index':           'idx',
+    'length':           'len',    'value':           'val',
+    'values':           'vals',   'threshold':       'thr',
+    'probability':      'prob',   'accuracy':        'acc',
+    'precision':        'prec',   'recall':          'rec',
+    'feature':          'feat',   'features':        'feats',
+    'gradient':         'grad',   'optimizer':       'optim',
+    'optimization':     'optim',  'training':        'train',
+    'validation':       'val',    'evaluation':      'eval',
+    'prediction':       'pred',   'predictions':     'preds',
+    'learning':         'lrn',    'iteration':       'iter',
+    'iterations':       'iters',  'epoch':           'ep',
+    'epochs':           'eps',    'batch':           'btch',
+    'sample':           'smp',    'samples':         'smps',
+    'weight':           'wt',     'weights':         'wts',
+    'dimension':        'dim',    'dimensions':      'dims',
+    'checkpoint':       'ckpt',   'model':           'mdl',
+    'layer':            'lyr',    'layers':          'lyrs',
+    'activation':       'act',    'normalization':   'norm',
+    'regularization':   'reg',    'performance':     'perf',
+    'benchmark':        'bench',  'metric':          'mtr',
+    'metrics':          'mtrs',   'statistic':       'stat',
+    'statistics':       'stats',  'generate':        'gen',
+    'generation':       'gen',    'algorithm':       'algo',
+    'complexity':       'cplx',   'efficiency':      'eff',
+    # ── System / network ──────────────────────────────────────────
+    'process':          'proc',   'processes':       'procs',
+    'thread':           'thr',    'goroutine':       'grtn',
+    'memory':           'mem',    'allocation':      'alloc',
+    'execution':        'exec',   'operation':       'op',
+    'operations':       'ops',    'transaction':     'txn',
+    'timestamp':        'ts',     'duration':        'dur',
+    'interval':         'intv',   'frequency':       'freq',
+    'bandwidth':        'bw',     'throughput':      'tput',
+    'latency':          'lat',    'timeout':         'to',
+    'connection':       'conn',   'server':          'srv',
+    'client':           'cli',    'request':         'req',
+    'response':         'resp',   'channel':         'ch',
+    'socket':           'sock',   'address':         'addr',
+    'protocol':         'proto',  'authentication':  'auth',
+    'authorization':    'authz',  'serialization':   'ser',
+    'deserialization':  'deser',  'encryption':      'enc',
+    'decryption':       'dec',    'compression':     'cmp',
+    # ── Database / storage ────────────────────────────────────────
+    'database':         'db',     'query':           'qry',
+    'table':            'tbl',    'column':          'col',
+    'record':           'rec',    'schema':          'sch',
+    'migration':        'mig',    'constraint':      'cstr',
+    'transaction':      'txn',
+    # ── Go / Rust specific ────────────────────────────────────────
+    'receiver':         'rcv',    'sender':          'snd',
+    'ownership':        'own',    'borrowing':       'brw',
+    'lifetime':         'lt',     'closure':         'cls',
+    'iterator':         'iter',   'struct':          'st',
+    # ── JS/TS specific ────────────────────────────────────────────
+    'promise':          'prm',    'async':           'asnc',
+    'await':            'awt',    'extends':         'ext',
+    'implements':       'impl',
+    # ══ RUSSIAN ═══════════════════════════════════════════════════
+    'значение':         'зн',     'значения':        'зн',
+    'значений':         'зн',     'параметр':        'пар',
+    'параметры':        'пар',    'параметров':      'пар',
+    'итерация':         'ит',     'итерации':        'ит',
+    'итераций':         'ит',     'количество':      'кол',
+    'завершение':       'зав',    'выполнение':      'вып',
+    'предупреждение':   'пред',   'предупреждения':  'пред',
+    'ошибка':           'ош',     'ошибки':          'ош',
+    'ошибок':           'ош',     'обучение':        'обуч',
+    'обработка':        'обр',    'результат':       'рез',
+    'результаты':       'рез',    'функция':         'фн',
+    'функции':          'фн',     'конфигурация':    'конф',
+    'инициализация':    'инит',   'сообщение':       'смс',
+    'переменная':       'пер',    'переменные':      'пер',
+    'переменных':       'пер',    'максимум':        'макс',
+    'минимум':          'мин',    'среднее':         'ср',
+    'точность':         'точн',   'модель':          'мдл',
+    'шаг':              'ш',      'эпоха':           'эп',
+    'эпохи':            'эп',     'эпох':            'эп',
+    'пакет':            'пкт',    'выборка':         'выб',
+    'признак':          'пр',     'признаки':        'пр',
+    'начало':           'нач',    'конец':           'кон',
+    'загрузка':         'загр',   'сохранение':      'сохр',
+    'строка':           'стр',    'столбец':         'стлб',
+    'индекс':           'инд',    'создание':        'созд',
+    'удаление':         'удал',   'обновление':      'обн',
+    'проверка':         'пров',   'валидация':       'вал',
+    'тренировка':       'трен',   'оценка':          'оцен',
+    'предсказание':     'прд',    'прогноз':         'прогн',
+    'вероятность':      'вер',    'порог':           'пор',
+    'скорость':         'скор',   'память':          'пам',
+    'время':            'вр',     'размер':          'разм',
+    'запрос':           'зпр',    'ответ':           'отв',
+    'соединение':       'соед',   'сервер':          'срв',
+    'клиент':           'кл',     'процесс':         'прц',
+    'поток':            'пток',   'канал':           'кн',
+    'буфер':            'буф',    'контекст':        'ктк',
+    'окружение':        'окр',    'настройки':       'нст',
+    'сессия':           'сес',    'запись':          'зап',
+    'чтение':           'чт',     'запись':          'зап',
+    'обработчик':       'обрб',   'генерация':       'ген',
+    'алгоритм':         'алг',    'операция':        'оп',
+    'транзакция':       'трнз',   'исключение':      'иск',
+    'атрибут':          'атр',    'метод':           'мт',
+    'объект':           'обж',    'экземпляр':       'экз',
+    'интерфейс':        'инт',    'реализация':      'реал',
+    'компонент':        'комп',   'сервис':          'срвс',
+    'библиотека':       'библ',   'модуль':          'мод',
+    'пакет':            'пкт',    'файл':            'ф',
+    'папка':            'пп',     'директория':      'дир',
+    'временный':        'врм',    'базовый':         'баз',
+    'основной':         'осн',    'дополнительный':  'доп',
+    'успешно':          'ок',     'неудача':         'ош',
+    'запущено':         'запущ',  'остановлено':     'стоп',
+    'завершено':        'зав',    'найдено':         'найд',
+    'создано':          'созд',   'удалено':         'удал',
+    'обновлено':        'обн',    'загружено':       'загр',
+    'сохранено':        'сохр',
+}
+
+
+def compress_word(word: str) -> str:
+    """Compress a single word using dictionary + formula fallback."""
+    if len(word) <= 4:
+        return word
+    # Don't touch: numbers, CamelCase identifiers, special tokens
+    if any(c.isdigit() for c in word):
+        return word
+    if word[0].isupper() and any(c.isupper() for c in word[1:]):
+        return word  # CamelCase — don't touch
+    if word.startswith(('__', '0x', '0b')):
+        return word
+
+    n = len(word)
+    lower = word.lower()
+
+    # Dictionary lookup
+    if lower in _KNOWN:
+        abbr = _KNOWN[lower]
+        if word[0].isupper():
+            return abbr[0].upper() + abbr[1:]
+        return abbr
+
+    # Formula fallback
+    if n <= 6:
+        # Remove middle vowels: keep first 2 + non-vowels from middle + last 1
+        mid = ''.join(c for c in word[2:-1] if not _is_vowel(c))
+        result = word[:2] + mid + word[-1]
+        return result if len(result) < n else word
+
+    if n <= 10:
+        # Keep first 3 + remove middle vowels (max 2 kept) + last 2
+        mid = ''.join(c for c in word[3:-2] if not _is_vowel(c))[:2]
+        result = word[:3] + mid + word[-2:]
+        return result if len(result) < n - 1 else word
+
+    # 11+ chars: first 3 + first inner vowel + up to 2 mid consonants + last 3
+    inner = word[3:-3]
+    first_v = next((c for c in inner if _is_vowel(c)), '')
+    mid_c = ''.join(c for c in inner if not _is_vowel(c))[:2]
+    result = word[:3] + first_v + mid_c + word[-3:]
+    return result if len(result) < n - 2 else word[:5] + word[-3:]
+
+
+# ── Log line detector — which languages/patterns to process ──────────────────
+_LOG_PATTERN = _re.compile(
+    r'('
+    # Python
+    r'(logger|logging|log)\s*\.(info|warning|error|debug|critical|warn|fatal)\s*[.(]'
+    r'|print\s*\('
+    # JS/TS
+    r'|console\s*\.(log|warn|error|info|debug)\s*\('
+    # Go
+    r'|log\s*\.(Printf|Println|Print|Fatalf|Panicf|Errorf)\s*\('
+    r'|fmt\s*\.(Printf|Println|Print|Fprintf|Sprintf)\s*\('
+    # Rust
+    r'|(println|eprintln|print|eprint|info|warn|error|debug|trace)!\s*\('
+    # Java/C#
+    r'|System\.out\.(println|print|printf)\s*\('
+    r'|Console\.(Write|WriteLine)\s*\('
+    r'|\b(log4j|slf4j|logback|nlog|serilog).*\.'
+    # Generic
+    r'|\bLOGGER\b|\bLOG\b'
+    r')',
+    _re.IGNORECASE
+)
+
+_STRING_PATTERN = _re.compile(r'(f?["\'])((?:[^"\'\\]|\\.)*)(\1)')
+
+
+def _compress_string(m: _re.Match) -> str:
+    """Compress words inside a matched string literal."""
+    quote, content, _ = m.group(1), m.group(2), m.group(3)
+    # Split on word boundaries, compress alpha-only words
+    parts = _re.split(r'(\b[a-zA-Zа-яёА-ЯЁ]{5,}\b)', content)
+    compressed = ''.join(
+        compress_word(p) if _re.match(r'^[a-zA-Zа-яёА-ЯЁ]{5,}$', p) else p
+        for p in parts
+    )
+    return quote + compressed + quote
+
+
+def _abbreviate_line(line: str) -> str:
+    """Compress string literals inside log/print calls in any language."""
+    if not _LOG_PATTERN.search(line):
+        return line
+    return _STRING_PATTERN.sub(_compress_string, line)
+
+
+# ── Main compressor ───────────────────────────────────────────────────────────
+def _smart_compress_code(source: str) -> str:
+    """
+    Compress Python source for AI context:
+    1. Remove single-line comments entirely
+    2. Shorten docstrings to first line
+    3. Compress string literals in log/print calls
+    4. Collapse consecutive blank lines to max 1
+    Returns compressed source — all logic preserved, indentation intact.
+    """
+    lines = source.splitlines()
+    result: list[str] = []
+    in_docstring = False
+    docstring_char = ''
+    docstring_lines = 0
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        indent = line[: len(line) - len(line.lstrip())]
+
+        if not in_docstring:
+            # ── Docstring start ───────────────────────────────────
+            found_doc = False
+            for q in ('"""', "'''"):
+                if stripped.startswith(q):
+                    cnt = stripped.count(q)
+                    # Closed on same line?
+                    closed_same = cnt >= 2 and (stripped.endswith(q) and len(stripped) > len(q))
+                    inner = stripped[len(q):].rstrip(q).strip() if closed_same else stripped[len(q):].strip()
+                    short = (inner[:80] + '…') if len(inner) > 80 else inner
+                    result.append(indent + q + short + q)
+                    if not closed_same:
+                        in_docstring = True
+                        docstring_char = q
+                        docstring_lines = 0
+                    i += 1
+                    found_doc = True
+                    break
+            if found_doc:
+                continue
+
+            # ── Single-line comment ───────────────────────────────
+            if stripped.startswith('#'):
+                i += 1
+                continue
+
+            # ── Inline comment strip ──────────────────────────────
+            if '#' in line and not _re.search(r'["\'][^"\']*#', line):
+                line = _re.sub(r'\s+#[^\n"\']*$', '', line)
+
+            # ── Abbreviate log strings ────────────────────────────
+            line = _abbreviate_line(line)
+
+            # ── Blank line collapse ───────────────────────────────
+            if not line.strip():
+                if result and result[-1].strip():
+                    result.append('')
+                i += 1
+                continue
+
+            result.append(line)
+            i += 1
+
+        else:
+            # Inside multi-line docstring — skip body
+            docstring_lines += 1
+            if docstring_char and docstring_char in stripped and docstring_lines > 0:
+                in_docstring = False
+                docstring_char = ''
+            i += 1
+
+    # Remove trailing blanks
+    while result and not result[-1].strip():
+        result.pop()
+
+    return '\n'.join(result)
+
 class AutoImproveEngine:
 
     def __init__(
@@ -131,6 +483,11 @@ class AutoImproveEngine:
     def cancel(self) -> None:
         self._cancel_requested = True
         self._emit("pipeline_cancel", {"message": "Отмена запрошена..."})
+        # Kill the currently running subprocess immediately
+        try:
+            self._runner.kill_current()
+        except Exception:
+            pass
 
     @property
     def is_running(self) -> bool:
@@ -221,6 +578,36 @@ class AutoImproveEngine:
             strategy_used=strategy,
         )
 
+        # ── MODE "val_first": run validators BEFORE primary script ──────────
+        patch_mode_early = getattr(cfg, "patch_mode", "immediate")
+        if patch_mode_early == "val_first" and cfg.validator_scripts:
+            self._emit("ai_thinking", {"message": "🔍 Валидаторы первыми — запуск проверок..."})
+            early_val_results = await self._run_validators(cfg)
+            result.script_results.extend(early_val_results)
+
+            all_early_ok = all(sr.success for sr in early_val_results)
+            passed_e = sum(1 for sr in early_val_results if sr.success)
+            total_e  = len(early_val_results)
+
+            if not all_early_ok:
+                failed_e = [sr.short_name for sr in early_val_results if not sr.success]
+                self._emit("ai_thinking", {
+                    "message": f"⛔ Валидаторы: {passed_e}/{total_e} — "
+                               f"пропускаю итерацию ({', '.join(failed_e)} упали)"
+                })
+                result.patches_applied = 0
+                result.finished_at = datetime.now()
+                return result
+            else:
+                self._emit("ai_thinking", {
+                    "message": f"✅ Валидаторы: {passed_e}/{total_e} — запускаю основной скрипт"
+                })
+
+        # ── Cancel check after early validators ──────────
+        if self._cancel_requested:
+            result.finished_at = datetime.now()
+            return result
+
         # ── Run primary scripts ───────────────────────────
         primary_results: list[ScriptResult] = []
         for sc in cfg.primary_scripts:
@@ -261,15 +648,67 @@ class AutoImproveEngine:
         # ── Collect output files ──────────────────────────
         output_contexts = self._collect_output_files(cfg, cfg.primary_scripts)
 
-        # ── Build prompt ──────────────────────────────────
+        # ── Cancel check ──────────────────────────────────
+        if self._cancel_requested:
+            result.finished_at = datetime.now()
+            return result
+
+        # ══════════════════════════════════════════════════════════════════
+        #  THREE PATCH MODES — controls WHEN validators run relative to AI
+        #
+        #  "immediate"  → Primary → AI → Apply → Validators
+        #  "after_val"  → Primary → Validators → AI (sees both logs) → Apply
+        #  "val_first"  → Validators → if OK → Primary → AI → Apply
+        #                             → if fail → skip iteration
+        # ══════════════════════════════════════════════════════════════════
+        patch_mode = getattr(cfg, "patch_mode", "immediate")
+        val_results_pre: list = []  # validators run before AI (after_val / val_first)
+
+        # ── MODE "after_val" and "all_then_ai": validators BEFORE AI ────────
+        if patch_mode in ("after_val", "all_then_ai") and cfg.validator_scripts:
+            self._emit("ai_thinking", {"message": "🔍 Запуск валидаторов перед AI..."})
+            val_results_pre = await self._run_validators(cfg)
+            result.script_results.extend(val_results_pre)
+            val_pre_ctxs = self._collect_output_files(cfg, cfg.validator_scripts)
+            output_contexts.extend(val_pre_ctxs)
+
+            all_ok = all(sr.success for sr in val_results_pre)
+            passed = sum(1 for sr in val_results_pre if sr.success)
+            total  = len(val_results_pre)
+
+            if not all_ok:
+                failed_names = [sr.short_name for sr in val_results_pre if not sr.success]
+                self._emit("ai_thinking", {
+                    "message": f"❌ Валидаторы: {passed}/{total} — "
+                               f"AI не вызывается ({', '.join(failed_names)} упали)"
+                })
+                result.patches_applied = 0
+                result.finished_at = datetime.now()
+                return result
+            else:
+                self._emit("ai_thinking", {
+                    "message": f"✅ Валидаторы: {passed}/{total} прошли — вызываю AI с полным контекстом"
+                })
+
+        # ── Cancel check after validators (after_val / all_then_ai) ──────
+        if self._cancel_requested:
+            result.finished_at = datetime.now()
+            return result
+
+        # ── MODE "val_first": validators completely BEFORE primary script ──
+        # (validators already ran before primary in outer loop — handled below)
+
+        # ── Build prompt (includes validator logs if after_val) ───────────
         self._emit("ai_thinking", {"message": "Строю контекст для AI..."})
         prompt = self._build_prompt(cfg, iteration, primary_results,
                                     output_contexts, run.iterations, strategy)
 
-        # ── Query AI (single or consensus) ────────────────────
+        # ── Query AI ──────────────────────────────────────────────────────
         strategy_label = (cfg.custom_strategy.name if cfg.custom_strategy
                           else strategy.value)
         self._emit("ai_thinking", {"message": f"AI анализирует [{strategy_label}]..."})
+        # Emit full prompt so UI can show it
+        self._emit("prompt_sent", {"prompt": prompt, "iteration": iteration, "strategy": strategy_label})
 
         if (cfg.consensus and cfg.consensus.enabled and cfg.consensus.model_ids):
             ai_response, consensus_notes = await self._query_consensus(cfg, prompt)
@@ -278,6 +717,8 @@ class AutoImproveEngine:
         else:
             ai_response = await self._query_ai(prompt, cfg)
             result.ai_analysis = ai_response
+        # Emit full AI response text for logging
+        self._emit("ai_full_response", {"response": ai_response, "iteration": iteration})
 
         patches = self._patch.parse_patches(ai_response)
         result.patches_generated = len(patches)
@@ -293,14 +734,11 @@ class AutoImproveEngine:
             result.goal_achieved = True
             return result
 
-        # ── SAFE_RATCHET: check metrics before applying ───
+        # ── SAFE_RATCHET: check metrics before applying ───────────────────
         if strategy == AIStrategy.SAFE_RATCHET and run.iterations:
             last_metrics = run.iterations[-1].metrics_extracted
             if not self._metrics_improved(last_metrics, result.metrics_extracted):
-                self._emit("ai_thinking", {
-                    "message": "⚠ Метрики не улучшились — пересматриваю подход"
-                })
-                # Ask AI for alternative after regression
+                self._emit("ai_thinking", {"message": "⚠ Метрики не улучшились — пересматриваю подход"})
                 rollback_prompt = self._build_regression_prompt(
                     cfg, last_metrics, result.metrics_extracted, ai_response
                 )
@@ -308,32 +746,34 @@ class AutoImproveEngine:
                 patches = self._patch.parse_patches(ai_response2)
                 result.ai_analysis += "\n\n[REVISION]\n" + ai_response2
 
-        # ── Apply patches ─────────────────────────────────
+        # ── Apply patch ───────────────────────────────────────────────────
+        # For "immediate" and "after_val": apply now (validators already ran / will run after)
+        # For "val_first":                apply now (validators ran before primary)
         if cfg.auto_apply_patches and patches:
-            applied, failed, rolled_back = await self._apply_patches_safe(
-                patches, cfg, primary_results)
-            result.patches_applied = applied
-            result.patches_failed = failed
-            result.rolled_back = rolled_back
+            if patch_mode in ("immediate", "after_val", "val_first", "all_then_ai"):
+                applied, failed, rolled_back = await self._apply_patches_safe(
+                    patches, cfg, primary_results)
+                result.patches_applied = applied
+                result.patches_failed  = failed
+                result.rolled_back     = rolled_back
+                if rolled_back:
+                    self._emit("rollback", {"reason": "Синтаксическая ошибка после патча",
+                                            "iteration": iteration})
+                    self._em.add_avoid_pattern(
+                        description=f"Патч итерации {iteration} сломал синтаксис",
+                        error_context=self._extract_errors(primary_results),
+                        bad_approach=str(patches[0].search_content[:200] if patches else ""),
+                        better_approach="Более осторожный точечный патч",
+                    )
 
-            if rolled_back:
-                self._emit("rollback", {"reason": "Синтаксическая ошибка после патча",
-                                        "iteration": iteration})
-                self._em.add_avoid_pattern(
-                    description=f"Патч итерации {iteration} сломал синтаксис",
-                    error_context=self._extract_errors(primary_results),
-                    bad_approach=str(patches[0].search_content[:200] if patches else ""),
-                    better_approach="Более осторожный точечный патч",
-                )
-
-        # ── Run validators ────────────────────────────────
-        if cfg.validator_scripts and not result.rolled_back:
-            self._emit("ai_thinking", {"message": "Запуск валидаторов..."})
-            val_results = await self._run_validators(cfg)
-            result.script_results.extend(val_results)
-            val_ctxs = self._collect_output_files(cfg, cfg.validator_scripts)
-            output_contexts.extend(val_ctxs)
-
+        # ── Run validators AFTER patch (immediate mode only) ──────────────
+        # In "all_then_ai" validators already ran before AI — don't run again
+        if patch_mode == "immediate" and cfg.validator_scripts and not result.rolled_back:
+            self._emit("ai_thinking", {"message": "🔍 Запуск валидаторов..."})
+            val_results_post = await self._run_validators(cfg)
+            result.script_results.extend(val_results_post)
+            val_post_ctxs = self._collect_output_files(cfg, cfg.validator_scripts)
+            output_contexts.extend(val_post_ctxs)
         result.finished_at = datetime.now()
         return result
 
@@ -394,21 +834,66 @@ class AutoImproveEngine:
             if run_metrics:
                 parts.append(f"**Лучшие метрики за все итерации:** {run_metrics}\n")
 
-        # Current script content
+        # ── Smart code compression ────────────────────────────────────────────────
+        # Strategy:
+        #   Iter 1-2 : always full code (AI must understand the codebase first)
+        #   Iter 3+  : compress only IF token budget exceeded AND patch history shows
+        #              AI already knows the file (has applied patches before)
+        #   Compression pipeline:
+        #     1. Strip comments + docstrings (saves 15-40% without losing logic)
+        #     2. Abbreviate common log/print strings (saves 5-10%)
+        #     3. If still too big → AST skeleton (signatures + bodies as ...)
+        #     4. Never skeleton if last 2+ patches failed (AI needs full code to match)
         parts.append("## ТЕКУЩИЙ КОД\n")
+
+        # Detect if AI has ever successfully applied a patch to this file
+        ever_applied = any(r.patches_applied > 0 for r in history)
+        recent_failed = sum(1 for r in history[-3:] if r.patches_applied == 0 and not r.rolled_back)
+        force_full = (iteration <= 2) or (recent_failed >= 2) or (not ever_applied)
+
         for sc in cfg.primary_scripts:
             if sc.allow_patching and Path(sc.script_path).exists():
                 content = Path(sc.script_path).read_text(encoding="utf-8", errors="replace")
                 token_est = TokenBudget.estimate_tokens(content)
-                budget_for_code = cfg.max_context_tokens // 4
-                if token_est > budget_for_code:
-                    from services.project_manager import PythonSkeletonExtractor
-                    skeleton = PythonSkeletonExtractor().extract(content)
-                    parts.append(f"### `{sc.name}` (скелет ~{token_est} tok):\n"
-                                 f"```python\n{skeleton}\n```\n")
-                    parts.append("*Полный файл слишком большой — SEARCH_BLOCK должен точно совпадать с кодом*\n")
-                else:
+                budget_for_code = cfg.max_context_tokens // 3  # 33% budget for code
+
+                if force_full or token_est <= budget_for_code:
+                    # Full code — no compression
                     parts.append(f"### `{sc.name}`:\n```python\n{content}\n```\n")
+                    if force_full and token_est > budget_for_code:
+                        parts.append(
+                            f"*Полный код ({token_est} tok) — сжатие отключено: "
+                            f"{'итерация 1-2' if iteration <= 2 else 'патчи не применялись'}*\n"
+                        )
+                else:
+                    # Compression pipeline
+                    compressed = _smart_compress_code(content)
+                    comp_tokens = TokenBudget.estimate_tokens(compressed)
+
+                    if comp_tokens <= budget_for_code:
+                        # Comment-stripped version fits — use it
+                        parts.append(
+                            f"### `{sc.name}` (без коммент., {comp_tokens} tok):\n"
+                            f"```python\n{compressed}\n```\n"
+                        )
+                        parts.append(
+                            "⚠ Комментарии удалены для экономии токенов. "
+                            "SEARCH_BLOCK: копируй код ТОЧНО как в файле (с оригинальными отступами).\n"
+                        )
+                    else:
+                        # Still too big → AST skeleton
+                        from services.project_manager import PythonSkeletonExtractor
+                        skeleton = PythonSkeletonExtractor().extract(content)
+                        skel_tokens = TokenBudget.estimate_tokens(skeleton)
+                        parts.append(
+                            f"### `{sc.name}` [СКЕЛЕТ API, {skel_tokens} tok / оригинал {token_est} tok]:\n"
+                            f"```python\n{skeleton}\n```\n"
+                        )
+                        parts.append(
+                            "⚠ СКЕЛЕТ: только сигнатуры функций. "
+                            "SEARCH_BLOCK должен совпадать с РЕАЛЬНЫМ кодом файла.\n"
+                            "Если не знаешь точный код — попроси: 'Покажи строки X-Y из файла'\n"
+                        )
 
         # Logs
         parts.append("## ЛОГИ\n")
@@ -570,6 +1055,9 @@ SEARCH_BLOCK должен ТОЧНО совпадать с кодом файла
                     "file": Path(target).name,
                     "lines_changed": (patch.replace_content.count("\n")
                                       - patch.search_content.count("\n")),
+                    "search": patch.search_content,
+                    "replace": patch.replace_content,
+                    "file_path": str(target),
                 })
             except Exception as e:
                 failed += 1
@@ -608,6 +1096,9 @@ SEARCH_BLOCK должен ТОЧНО совпадать с кодом файла
             return False, str(e)
 
     async def _run_validators(self, config: PipelineConfig) -> list[ScriptResult]:
+        # Note: validators that require interactive input MUST have auto_input configured.
+        # If a validator gets EOFError, it means its auto_input sequences are missing.
+        # The validator will fail (exit code 1) — this is expected behavior.
         results = []
         for sc in config.validator_scripts:
             self._emit("script_start", {"script": sc.name, "role": "validator"})
@@ -628,7 +1119,8 @@ SEARCH_BLOCK должен ТОЧНО совпадать с кодом файла
             results.append(sr)
             self._emit("script_done", {
                 "script": sc.name, "exit_code": sr.exit_code,
-                "success": sr.success, "role": "validator"
+                "success": sr.success, "role": "validator",
+                "elapsed": f"{sr.elapsed_seconds:.1f}s"
             })
         return results
 

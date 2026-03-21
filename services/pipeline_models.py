@@ -185,6 +185,10 @@ class PipelineConfig:
     auto_apply_patches: bool = True
     auto_rollback_on_error: bool = True
     retry_on_patch_failure: int = 2
+    patch_mode: str = "immediate"
+    # "immediate"  — Apply patch → run validators  (default)
+    # "after_val"  — Run validators → apply only if ALL pass
+    # "val_first"  — Run validators first → if ALL pass → query AI → apply
 
     # AI strategy
     ai_strategy: AIStrategy = AIStrategy.BALANCED
@@ -235,6 +239,7 @@ class PipelineConfig:
             "auto_apply_patches": self.auto_apply_patches,
             "auto_rollback_on_error": self.auto_rollback_on_error,
             "retry_on_patch_failure": self.retry_on_patch_failure,
+            "patch_mode": self.patch_mode,
             "ai_strategy": self.ai_strategy.value,
             "strategy_switch_after": self.strategy_switch_after,
             "log_max_chars": self.log_max_chars,
@@ -262,6 +267,7 @@ class PipelineConfig:
             auto_apply_patches=d.get("auto_apply_patches", True),
             auto_rollback_on_error=d.get("auto_rollback_on_error", True),
             retry_on_patch_failure=d.get("retry_on_patch_failure", 2),
+            patch_mode=d.get("patch_mode", "immediate"),
             ai_strategy=AIStrategy(d.get("ai_strategy", "balanced")),
             strategy_switch_after=d.get("strategy_switch_after", 3),
             log_max_chars=d.get("log_max_chars", 12000),

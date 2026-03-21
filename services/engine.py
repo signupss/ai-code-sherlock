@@ -33,9 +33,8 @@ class PatchEngine(IPatchEngine):
     """
 
     # Primary format: [SEARCH_BLOCK] ... [REPLACE_BLOCK] ... [END_PATCH]
-    # Primary: greedy capture — handles both empty and non-empty SEARCH_BLOCK
     _BRACKET_RE = re.compile(
-        r"\[SEARCH_BLOCK\](.*?)\[REPLACE_BLOCK\](.*?)(?=\[SEARCH_BLOCK\]|\[END_PATCH\]|$)",
+        r"\[SEARCH_BLOCK\]\s*\n(.*?)\n\s*\[REPLACE_BLOCK\]\s*\n(.*?)(?=\[SEARCH_BLOCK\]|\[END_PATCH\]|$)",
         re.DOTALL,
     )
 
@@ -45,20 +44,6 @@ class PatchEngine(IPatchEngine):
         re.DOTALL,
     )
 
-    # Filename hint pattern near patch blocks
-    _FILENAME_HINT_RE = re.compile(
-        r"`([^`\s]{1,60}\.[a-zA-Z0-9]{1,10})`"
-        r"|(?:[ФфFf]айл|[Сс]оздаю|[Ff]ile|[Cc]reat\w+)[:\s]+[`\"]?([^\s`\"]{1,60}\.[a-zA-Z0-9]{1,10})[`\"]?",
-        re.IGNORECASE
-    )
-
-    # Placeholder strings AI writes when no real code exists in context
-    _SEARCH_PLACEHOLDERS: frozenset = frozenset({
-        "## релевантный код", "## relevant code",
-        "## код проекта",    "## project code",
-        "## контекст",       "## context",
-    })
-
     def parse_patches(self, ai_response: str) -> list[PatchBlock]:
         if not ai_response:
             return []
@@ -67,55 +52,27 @@ class PatchEngine(IPatchEngine):
 
         # Strategy 1: bracket format
         for m in self._BRACKET_RE.finditer(ai_response):
-            search  = m.group(1).strip()
+            search = m.group(1).strip()
             replace = m.group(2).strip()
-            if not replace:
-                continue   # nothing to write
-            # Treat placeholder strings as empty search (= new file creation)
-            if search.lower() in self._SEARCH_PLACEHOLDERS:
-                search = ""
-            file_path = self._extract_filename_hint(ai_response, m.start())
-            patches.append(PatchBlock(
-                search_content=search,
-                replace_content=replace,
-                file_path=file_path,
-            ))
+            if search:
+                patches.append(PatchBlock(search_content=search, replace_content=replace))
 
         # Strategy 2: fenced format (fallback)
         if not patches:
             for m in self._FENCED_RE.finditer(ai_response):
-                search  = m.group(1).strip()
+                search = m.group(1).strip()
                 replace = m.group(2).strip()
-                if not replace:
-                    continue
-                if search.lower() in self._SEARCH_PLACEHOLDERS:
-                    search = ""
-                file_path = self._extract_filename_hint(ai_response, m.start())
-                patches.append(PatchBlock(
-                    search_content=search,
-                    replace_content=replace,
-                    file_path=file_path,
-                ))
+                if search:
+                    patches.append(PatchBlock(search_content=search, replace_content=replace))
 
         return patches
 
-    def _extract_filename_hint(self, text: str, patch_start: int) -> str | None:
-        """Scan up to 500 chars before the patch block for a filename mention."""
-        window = text[max(0, patch_start - 500): patch_start]
-        matches = list(self._FILENAME_HINT_RE.finditer(window))
-        if not matches:
-            return None
-        groups = [g for g in matches[-1].groups() if g]
-        if groups:
-            name = groups[-1].strip().strip("`\"'")
-            if "." in name and len(name) < 80 and "/" not in name and "\\" not in name:
-                return name
-        return None
-
     def validate(self, file_content: str, patch: PatchBlock) -> PatchValidationResult:
         if not patch.search_content:
-            # Empty search = new-file creation, handled upstream — treated as valid
-            return PatchValidationResult(is_valid=True, match_count=0, match_line_start=0)
+            return PatchValidationResult(
+                is_valid=False, match_count=0, match_line_start=-1,
+                error_message="Search block is empty"
+            )
 
         # Exact match
         count = file_content.count(patch.search_content)
@@ -204,20 +161,19 @@ class PromptEngine(IPromptEngine):
 <новый код замены>
 [END_PATCH]
 
-СОЗДАНИЕ НОВОГО ФАЙЛА (файл ещё не существует):
-Укажи имя файла ПЕРЕД блоком (например: "Создаю `main.py`:"), затем оставь SEARCH_BLOCK пустым:
-[SEARCH_BLOCK]
-[REPLACE_BLOCK]
-<полное содержимое нового файла>
-[END_PATCH]
-
 КРИТИЧЕСКИЕ ПРАВИЛА:
 1. SEARCH_BLOCK должен ТОЧНО совпадать с кодом в файле (пробелы, отступы).
-2. Для НОВОГО файла — SEARCH_BLOCK всегда ПУСТОЙ. Никаких заглушек типа "## КОД ПРОЕКТА".
-3. Включай только минимально необходимый кусок для замены — не весь файл.
-4. Если нужно несколько замен — повтори блоки SEARCH_BLOCK/REPLACE_BLOCK.
+2. Включай только минимально необходимый кусок для замены — не весь файл.
+3. Если нужно несколько замен — повтори блоки SEARCH_BLOCK/REPLACE_BLOCK.
+4. Никогда не переписывай весь файл — только точечные изменения.
 5. Объясни ЧТО и ПОЧЕМУ меняешь ПЕРЕД блоками патча.
-6. Отвечай на языке пользователя."""
+6. Отвечай на языке пользователя.
+
+ВАЖНО — РЕЖИМ ОТВЕТА:
+• Если пользователь задаёт ВОПРОС (не просит изменить код) — отвечай ОБЫЧНЫМ ТЕКСТОМ без патчей.
+  Примеры вопросов: "как работает...", "что такое...", "почему...", "объясни...", "расскажи..."
+• Если пользователь просит ИЗМЕНИТЬ КОД — используй формат [SEARCH_BLOCK]/[REPLACE_BLOCK].
+• Никогда не генерируй пустые патчи или патчи-заглушки если изменений не требуется."""
 
         if sherlock_mode:
             base += """
@@ -234,8 +190,36 @@ class PromptEngine(IPromptEngine):
 
         return base
 
+    @staticmethod
+    def _is_question(request: str) -> bool:
+        """Detect if user is asking a question vs requesting a code change."""
+        req_lower = request.lower().strip()
+        if req_lower.endswith("?"):
+            return True
+        question_starts = (
+            "как ", "что ", "почему ", "зачем ", "когда ", "где ", "кто ",
+            "расскажи", "объясни", "опиши", "поясни", "в чём", "в чем",
+            "какой", "какая", "какое", "можно ли", "можешь ли",
+            "how ", "what ", "why ", "when ", "where ", "who ",
+            "explain", "describe", "tell me", "what is", "can you",
+        )
+        if any(req_lower.startswith(w) for w in question_starts):
+            return True
+        return False
+
     def build_analysis_prompt(self, request: str, context: ProjectContext) -> str:
         parts = [f"## ЗАПРОС ПОЛЬЗОВАТЕЛЯ\n{request}\n"]
+
+        # Hint to AI about response mode based on request type
+        if self._is_question(request):
+            parts.append(
+                "**РЕЖИМ: ВОПРОС** — Ответь развёрнутым текстом. "
+                "Патчи [SEARCH_BLOCK]/[REPLACE_BLOCK] НЕ нужны.\n"
+            )
+        else:
+            parts.append(
+                "**РЕЖИМ: ИЗМЕНЕНИЕ КОДА** — Используй формат [SEARCH_BLOCK]/[REPLACE_BLOCK].\n"
+            )
 
         if context.focused_file_path:
             parts.append(f"**Основной файл:** `{context.focused_file_path}`\n")
@@ -246,7 +230,6 @@ class PromptEngine(IPromptEngine):
                 tag = " *(сжато)*" if f.is_compressed else ""
                 parts.append(f"### `{f.relative_path}`{tag}")
                 parts.append(f"```\n{f.content}\n```\n")
-        # If no files: system prompt already instructs AI to create new file with empty SEARCH_BLOCK
 
         if context.error_logs:
             parts.append(f"## ЛОГИ ОШИБОК\n```\n{context.error_logs}\n```\n")

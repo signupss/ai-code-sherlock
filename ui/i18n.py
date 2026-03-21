@@ -84,6 +84,25 @@ _RU_TO_EN: dict[str, str] = {
     "Обработка...":          "Processing...",
     "Сжимаю контекст...":    "Compressing context...",
     "Генерирую ответ...":    "Generating response...",
+    # ── Script runner / Logs tab interactive stdin ────────────
+    "Ввод для запущенного скрипта... (Enter — отправить)":
+        "Input for running script... (Enter — send)",
+    "Отправить ввод скрипту":     "Send input to script",
+    "Выполняю":                   "Running",
+    "⏹ Операция остановлена":     "⏹ Operation stopped",
+    # ── Auto-run panel sub-tabs ───────────────────────────────
+    "📡 Лайв-лог":           "📡 Live Log",
+    "🤖 AI анализ":          "🤖 AI Analysis",
+    "✂️ Патчи":              "✂️ Patches",
+    "📤 Промпт":             "📤 Prompt",
+    "🤖 Ответ AI":           "🤖 AI Response",
+    # ── Auto-run panel placeholder texts ─────────────────────
+    "Промпт появится здесь когда AI начнёт анализ...":
+        "Prompt will appear here when AI begins analysis...",
+    "Ответ AI появится здесь после анализа...":
+        "AI response will appear here after analysis...",
+    "Применённые патчи появятся здесь...":
+        "Applied patches will appear here...",
     # ── File tree ────────────────────────────────────────────
     "Поиск файлов...":       "Search files...",
     "Папка не открыта":      "No folder open",

@@ -24,3 +24,48 @@ aiofiles>=23.2.0
 # pip install pytest pytest-asyncio
 # pytest>=7.4.0
 # pytest-asyncio>=0.23.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Script Runner — external runtime dependencies (not Python packages)
+# Install via your system package manager or official installer — NOT pip.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# JavaScript / TypeScript:
+#   https://nodejs.org  (installs `node`)
+#   npm install -g ts-node typescript   (for .ts files)
+#
+# Ruby:
+#   https://www.ruby-lang.org  (installs `ruby`)
+#
+# PHP:
+#   https://www.php.net/downloads  (installs `php`)
+#
+# Perl:
+#   https://www.perl.org/get.html  (installs `perl`)
+#   Pre-installed on macOS and most Linux distributions.
+#
+# Lua:
+#   https://www.lua.org/download.html  (installs `lua`)
+#   Ubuntu/Debian: sudo apt install lua5.4
+#
+# R:
+#   https://www.r-project.org  (installs `Rscript`)
+#
+# Julia:
+#   https://julialang.org/downloads  (installs `julia`)
+#
+# Go:
+#   https://go.dev/dl  (installs `go`)
+#   Required for .go files — uses `go run` to interpret single files.
+#
+# Java (single-file launch, Java 11+):
+#   https://adoptium.net  (installs `java`)
+#   Note: single-file source-code programs supported since Java 11.
+#
+# Bash / Shell:
+#   Pre-installed on Linux and macOS.
+#   Windows: Git Bash https://gitforwindows.org or WSL.
+#
+# PowerShell:
+#   Pre-installed on Windows 10/11.
+#   Linux/macOS: https://github.com/PowerShell/PowerShell
