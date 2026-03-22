@@ -214,6 +214,10 @@ class CodeEditor(QPlainTextEdit):
         palette.setColor(QPalette.ColorRole.Window,          QColor(bg))
         palette.setColor(QPalette.ColorRole.Button,          QColor(bd))
         self.setPalette(palette)
+        # Restore font size — setPalette can reset it to app default
+        font = self.font()
+        font.setPointSize(self._base_font_size)
+        self.setFont(font)
         self.setStyleSheet(f"""
             QPlainTextEdit {{
                 background-color: {bg};
@@ -221,6 +225,7 @@ class CodeEditor(QPlainTextEdit):
                 border: none;
                 selection-background-color: {sel};
                 selection-color: {fg};
+                font-size: {self._base_font_size}pt;
             }}
             QScrollBar:vertical {{
                 background: {bg};
@@ -299,12 +304,32 @@ class CodeEditor(QPlainTextEdit):
         self._base_font_size = 12
         self._apply_font_size()
 
+    def wheelEvent(self, event):
+        """Ctrl+Wheel = zoom, otherwise normal scroll."""
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.zoom_in()
+            elif delta < 0:
+                self.zoom_out()
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def changeEvent(self, event):
+        """Block Qt's built-in font-size change on Ctrl+= so our zoom_in/out stay in control."""
+        super().changeEvent(event)
+
     def _apply_font_size(self):
         font = self.font()
         font.setPointSize(self._base_font_size)
         self.setFont(font)
         self.setTabStopDistance(QFontMetrics(font).horizontalAdvance(' ') * 4)
         self._update_line_number_area_width()
+        # Re-apply stylesheet with updated font-size to override the global QSS rule
+        self._apply_editor_theme()
+        self.viewport().update()
+        self._line_num_area.update()
 
     def go_to_line(self, line: int) -> None:
         block = self.document().findBlockByLineNumber(line - 1)
@@ -519,12 +544,12 @@ class CodeEditor(QPlainTextEdit):
         mods = event.modifiers()
         ctrl = mods & Qt.KeyboardModifier.ControlModifier
 
-        # Zoom
-        if ctrl and key == Qt.Key.Key_Equal:
+        # Zoom — handle both Key_Equal (=) and Key_Plus (+) for Ctrl+= / Ctrl++
+        if ctrl and key in (Qt.Key.Key_Equal, Qt.Key.Key_Plus):
             self.zoom_in(); return
         if ctrl and key == Qt.Key.Key_Minus:
             self.zoom_out(); return
-        if ctrl and key == Qt.Key.Key_0:
+        if ctrl and key in (Qt.Key.Key_0, Qt.Key.Key_Insert):
             self.zoom_reset(); return
 
         # Escape → hide search bar
