@@ -15,6 +15,15 @@ except ImportError:
     def tr(s): return s
     def register_listener(cb): pass
 
+try:
+    from ui.theme_manager import get_color, register_theme_refresh
+except ImportError:
+    def get_color(k): return {
+        "bg2": "#131722", "bd2": "#1E2030", "tx0": "#CDD6F4",
+        "ok": "#9ECE6A", "err": "#F7768E",
+    }.get(k, "#CDD6F4")
+    def register_theme_refresh(cb): pass
+
 
 class PatchPreviewDialog(QDialog):
 
@@ -28,6 +37,7 @@ class PatchPreviewDialog(QDialog):
         self.setModal(True)
         self._build_ui(search_content, replace_content, file_path)
         register_listener(self._retranslate)
+        register_theme_refresh(self._refresh_styles)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -66,12 +76,17 @@ class PatchPreviewDialog(QDialog):
         replace_lines = len(replace.splitlines())
         delta = replace_lines - search_lines
         delta_str = (f"+{delta}" if delta > 0 else str(delta)) if delta != 0 else "±0"
-        delta_color = "#9ECE6A" if delta >= 0 else "#F7768E"
+        ok_c  = get_color("ok")
+        err_c = get_color("err")
+        delta_color = ok_c if delta >= 0 else err_c
 
         stats = QHBoxLayout()
-        stats.addWidget(self._badge(f"− {search_lines} {tr('строк')}", "#F7768E", "#2D1A1A"))
-        stats.addWidget(self._badge(f"+ {replace_lines} {tr('строк')}", "#9ECE6A", "#1A2D1A"))
-        stats.addWidget(self._badge(f"Δ {delta_str}", delta_color, "#1A1A2D"))
+        self._badge_del = self._make_badge(f"− {search_lines} {tr('строк')}", "del")
+        self._badge_add = self._make_badge(f"+ {replace_lines} {tr('строк')}", "add")
+        self._badge_delta = self._make_badge(f"Δ {delta_str}", "ok" if delta >= 0 else "err")
+        stats.addWidget(self._badge_del)
+        stats.addWidget(self._badge_add)
+        stats.addWidget(self._badge_delta)
         stats.addStretch()
         layout.addLayout(stats)
 
@@ -85,7 +100,6 @@ class PatchPreviewDialog(QDialog):
         before_l.setSpacing(4)
         self._before_hdr = QLabel(tr("ПОИСК (удаляемый код)"))
         self._before_hdr.setObjectName("sectionLabel")
-        self._before_hdr.setStyleSheet("color: #F7768E; letter-spacing: 1px;")
         before_l.addWidget(self._before_hdr)
         self._before_view = QTextEdit()
         self._before_view.setObjectName("diffSearch")
@@ -102,7 +116,6 @@ class PatchPreviewDialog(QDialog):
         after_l.setSpacing(4)
         self._after_hdr = QLabel(tr("ЗАМЕНА (новый код)"))
         self._after_hdr.setObjectName("sectionLabel")
-        self._after_hdr.setStyleSheet("color: #9ECE6A; letter-spacing: 1px;")
         after_l.addWidget(self._after_hdr)
         self._after_view = QTextEdit()
         self._after_view.setObjectName("diffReplace")
@@ -123,8 +136,47 @@ class PatchPreviewDialog(QDialog):
         footer.addWidget(self._btn_close)
         layout.addLayout(footer)
 
+        # Apply initial theme-aware styles
+        self._refresh_styles()
+
+    def _refresh_styles(self) -> None:
+        """Re-apply inline styles using current theme colors."""
+        ok_c  = get_color("ok")
+        err_c = get_color("err")
+        bg2   = get_color("bg2")
+        bd2   = get_color("bd2")
+        # Panel headers
+        self._before_hdr.setStyleSheet(f"color: {err_c}; letter-spacing: 1px;")
+        self._after_hdr.setStyleSheet(f"color: {ok_c}; letter-spacing: 1px;")
+        # Diff viewers (complement the QSS diffSearch/diffReplace rules)
+        self._before_view.setStyleSheet(
+            f"background-color: {bg2}; color: {err_c}; border-radius: 4px;"
+            f" padding: 8px; border: 1px solid {err_c}33;"
+        )
+        self._after_view.setStyleSheet(
+            f"background-color: {bg2}; color: {ok_c}; border-radius: 4px;"
+            f" padding: 8px; border: 1px solid {ok_c}33;"
+        )
+        # Re-apply badge styles
+        self._apply_badge_style(self._badge_del,   err_c, bg2)
+        self._apply_badge_style(self._badge_add,   ok_c,  bg2)
+        delta_color = ok_c if "+" in self._badge_delta.text() or "±" in self._badge_delta.text() else err_c
+        self._apply_badge_style(self._badge_delta, delta_color, bg2)
+
     @staticmethod
-    def _badge(text: str, color: str, bg: str) -> QLabel:
+    def _apply_badge_style(lbl: "QLabel", color: str, bg: str) -> None:
+        lbl.setStyleSheet(
+            f"color: {color}; background: {bg}; border: 1px solid {color}44;"
+            f" border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: bold;"
+        )
+
+    def _make_badge(self, text: str, kind: str) -> "QLabel":
+        """Create a badge label; style applied later by _refresh_styles."""
+        lbl = QLabel(text)
+        return lbl
+
+    @staticmethod
+    def _badge(text: str, color: str, bg: str) -> QLabel:  # legacy compat
         lbl = QLabel(text)
         lbl.setStyleSheet(
             f"color: {color}; background: {bg}; "

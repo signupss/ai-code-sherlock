@@ -44,6 +44,18 @@ try:
 except ImportError:
     def tr(s): return s
 
+try:
+    from ui.theme_manager import get_color, register_theme_refresh
+except ImportError:
+    def get_color(k): return {
+        "bg0": "#07080C", "bg1": "#0E1117", "bg2": "#131722", "bg3": "#1A1D2E",
+        "bd": "#2E3148", "bd2": "#1E2030",
+        "tx0": "#CDD6F4", "tx1": "#A9B1D6", "tx2": "#565f89", "tx3": "#3B4261",
+        "sel": "#2E3148", "ok": "#9ECE6A", "err": "#F7768E", "warn": "#E0AF68",
+        "ac": "#7AA2F7",
+    }.get(k, "#CDD6F4")
+    def register_theme_refresh(cb): pass
+
 
 
 # ══════════════════════════════════════════════════════════════
@@ -178,25 +190,71 @@ class CodeEditor(QPlainTextEdit):
         font.setPointSize(self._base_font_size)
         self.setFont(font)
 
-        # Dark editor colors
-        palette = self.palette()
-        palette.setColor(QPalette.ColorRole.Base, QColor("#0D1117"))
-        palette.setColor(QPalette.ColorRole.Text, QColor("#CDD6F4"))
-        self.setPalette(palette)
-        self.setStyleSheet("""
-            QPlainTextEdit {
-                background-color: #0D1117;
-                color: #CDD6F4;
-                border: none;
-                selection-background-color: #2E3148;
-                selection-color: #CDD6F4;
-            }
-        """)
+        self._apply_editor_theme()
+        register_theme_refresh(self._apply_editor_theme)
+
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.setTabStopDistance(QFontMetrics(self.font()).horizontalAdvance(' ') * 4)
         self.updateRequest.connect(self._update_line_number_area)
         self.blockCountChanged.connect(self._update_line_number_area_width)
         self._update_line_number_area_width()
+
+    def _apply_editor_theme(self):
+        """Re-apply palette and stylesheet from current theme."""
+        bg  = get_color("bg0")
+        fg  = get_color("tx0")
+        sel = get_color("sel")
+        bd  = get_color("bd")
+        ac  = get_color("ac")
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Base,            QColor(bg))
+        palette.setColor(QPalette.ColorRole.Text,            QColor(fg))
+        palette.setColor(QPalette.ColorRole.Highlight,       QColor(sel))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor(fg))
+        palette.setColor(QPalette.ColorRole.Window,          QColor(bg))
+        palette.setColor(QPalette.ColorRole.Button,          QColor(bd))
+        self.setPalette(palette)
+        self.setStyleSheet(f"""
+            QPlainTextEdit {{
+                background-color: {bg};
+                color: {fg};
+                border: none;
+                selection-background-color: {sel};
+                selection-color: {fg};
+            }}
+            QScrollBar:vertical {{
+                background: {bg};
+                width: 8px;
+                border-radius: 4px;
+                margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {bd};
+                border-radius: 4px;
+                min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {ac}; }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{ height: 0; border: none; }}
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {{ background: none; }}
+            QScrollBar:horizontal {{
+                background: {bg};
+                height: 8px;
+                border-radius: 4px;
+                margin: 0;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: {bd};
+                border-radius: 4px;
+                min-width: 30px;
+            }}
+            QScrollBar::handle:horizontal:hover {{ background: {ac}; }}
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal {{ width: 0; border: none; }}
+            QScrollBar::add-page:horizontal,
+            QScrollBar::sub-page:horizontal {{ background: none; }}
+        """)
 
     def _connect_signals(self):
         self.textChanged.connect(self._on_text_changed)
@@ -286,17 +344,25 @@ class CodeEditor(QPlainTextEdit):
 
     def _paint_line_numbers(self, event):
         painter = QPainter(self._line_num_area)
-        painter.fillRect(event.rect(), QColor("#0A0D14"))
+        bg0  = QColor(get_color("bg0"))
+        bd2  = QColor(get_color("bd2"))
+        tx0  = QColor(get_color("tx0"))
+        tx3  = QColor(get_color("tx3"))
+        bg2  = QColor(get_color("bg2"))
+        err  = QColor(get_color("err"))
+        sel  = QColor(get_color("sel"))
+        ac   = QColor(get_color("ac"))
 
-        fold_w = LineNumberArea.FOLD_W
+        # Slightly lighter bg for error line gutter
+        err_bg = QColor(err); err_bg.setAlpha(30)
+
+        painter.fillRect(event.rect(), bg0)
+
+        fold_w  = LineNumberArea.FOLD_W
         total_w = self._line_num_area.width()
 
-        # Fold column separator line
-        painter.setPen(QPen(QColor("#1A1E2E"), 1))
+        painter.setPen(QPen(bd2, 1))
         painter.drawLine(fold_w, event.rect().top(), fold_w, event.rect().bottom())
-
-        # Right border line
-        painter.setPen(QPen(QColor("#1E2030"), 1))
         painter.drawLine(total_w - 1, event.rect().top(), total_w - 1, event.rect().bottom())
 
         block = self.firstVisibleBlock()
@@ -315,13 +381,14 @@ class CodeEditor(QPlainTextEdit):
 
                 # Current-line background
                 if block_num == current_line:
-                    painter.fillRect(fold_w, top, total_w - fold_w - 1, lh, QColor("#131722"))
-                    painter.setPen(QColor("#CDD6F4"))
+                    painter.fillRect(fold_w, top, total_w - fold_w - 1, lh, bg2)
+                    painter.setPen(tx0)
                 elif line_num in self._line_num_area._error_lines:
-                    painter.fillRect(fold_w, top, total_w - fold_w - 1, lh, QColor("#2A0A0A"))
-                    painter.setPen(QColor("#F7768E"))
+                    err_fill = QColor(err); err_fill.setAlpha(40)
+                    painter.fillRect(fold_w, top, total_w - fold_w - 1, lh, err_fill)
+                    painter.setPen(err)
                 else:
-                    painter.setPen(QColor("#3B4261"))
+                    painter.setPen(tx3)
 
                 # Line number text
                 painter.drawText(
@@ -341,16 +408,14 @@ class CodeEditor(QPlainTextEdit):
 
                     painter.setPen(Qt.PenStyle.NoPen)
                     if is_folded:
-                        # ▶ right-pointing (collapsed)
-                        painter.setBrush(QBrush(QColor("#7AA2F7")))
+                        painter.setBrush(QBrush(ac))
                         pts = [
                             QPoint(ax, ay),
                             QPoint(ax, ay + arrow_size),
                             QPoint(ax + arrow_size, ay + arrow_size // 2),
                         ]
                     else:
-                        # ▼ down-pointing (expanded)
-                        painter.setBrush(QBrush(QColor("#565f89")))
+                        painter.setBrush(QBrush(tx3))
                         pts = [
                             QPoint(ax, ay),
                             QPoint(ax + arrow_size, ay),
@@ -360,20 +425,20 @@ class CodeEditor(QPlainTextEdit):
 
                 # ── Fold range vertical line ───────────────────
                 elif self._is_inside_fold(line_num):
-                    painter.setPen(QPen(QColor("#2E3148"), 1))
+                    painter.setPen(QPen(bd2, 1))
                     cx = fold_w // 2
                     painter.drawLine(cx, top, cx, top + lh)
 
                 # ── Bookmark dot ──────────────────────────────
                 if line_num in self._line_num_area._bookmark_lines:
                     painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QBrush(QColor("#E0AF68")))
+                    painter.setBrush(QBrush(QColor(get_color("warn"))))
                     painter.drawEllipse(2, mid_y - 4, 8, 8)
 
                 # ── Error dot ─────────────────────────────────
                 if line_num in self._line_num_area._error_lines:
                     painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QBrush(QColor("#F7768E")))
+                    painter.setBrush(QBrush(err))
                     painter.drawEllipse(2, mid_y - 4, 8, 8)
 
             block = block.next()
@@ -387,7 +452,7 @@ class CodeEditor(QPlainTextEdit):
         extras = []
         if not self.isReadOnly():
             sel = QTextEdit.ExtraSelection()
-            sel.format.setBackground(QColor("#131722"))
+            sel.format.setBackground(QColor(get_color("bg2")))
             sel.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
             sel.cursor = self.textCursor()
             sel.cursor.clearSelection()
@@ -400,13 +465,14 @@ class CodeEditor(QPlainTextEdit):
         cursor = self.textCursor()
         pos = cursor.position()
         text = self.toPlainText()
+        _cur_line_bg = QColor(get_color("bg2"))
 
         def make_highlight(p: int, good: bool) -> QTextEdit.ExtraSelection:
             sel = QTextEdit.ExtraSelection()
             fmt = QTextCharFormat()
-            color = QColor("#9ECE6A") if good else QColor("#F7768E")
+            color = QColor(get_color("ok")) if good else QColor(get_color("err"))
             fmt.setBackground(color)
-            fmt.setForeground(QColor("#0D1117"))
+            fmt.setForeground(QColor(get_color("bg0")))
             sel.format = fmt
             c = self.textCursor()
             c.setPosition(p)
@@ -418,7 +484,7 @@ class CodeEditor(QPlainTextEdit):
         current = self.extraSelections()
         # Remove old bracket highlights (keep current line highlight)
         current = [s for s in current
-                   if s.format.background().color() == QColor("#131722")]
+                   if s.format.background().color() == _cur_line_bg]
 
         if pos < len(text):
             ch = text[pos]
@@ -651,12 +717,11 @@ class CodeEditor(QPlainTextEdit):
 
     def _underline_errors(self, errors: list[dict]):
         """Use ExtraSelections for error underlines — never wipe the syntax highlighting."""
-        # QColor is not hashable — compare via .rgb() integer
         _KEEP_RGBS = {
-            QColor("#131722").rgb(),   # current line highlight
-            QColor("#2E3148").rgb(),   # search result
-            QColor("#7AA2F7").rgb(),   # current search result
-            QColor("#9ECE6A").rgb(),   # bracket match good
+            QColor(get_color("bg2")).rgb(),   # current line highlight
+            QColor(get_color("sel")).rgb(),   # search result / occurrence
+            QColor(get_color("ac")).rgb(),    # current search result
+            QColor(get_color("ok")).rgb(),    # bracket match good
         }
         existing = [
             s for s in self.extraSelections()
@@ -666,7 +731,7 @@ class CodeEditor(QPlainTextEdit):
 
         error_sels = []
         fmt = QTextCharFormat()
-        fmt.setUnderlineColor(QColor("#F7768E"))
+        fmt.setUnderlineColor(QColor(get_color("err")))
         fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.WaveUnderline)
 
         for err in errors:
@@ -703,10 +768,12 @@ class CodeEditor(QPlainTextEdit):
             self._clear_occurrence_highlights()
             return
 
+        occ_bg  = QColor(get_color("sel"))
+        occ_fg  = QColor(get_color("tx0"))
         fmt = QTextCharFormat()
-        fmt.setBackground(QColor("#1E2A40"))
-        fmt.setForeground(QColor("#CDD6F4"))
-        _occ_rgb = QColor("#1E2A40").rgb()
+        fmt.setBackground(occ_bg)
+        fmt.setForeground(occ_fg)
+        _occ_rgb = occ_bg.rgb()
 
         occurrences = []
         doc = self.document()
@@ -723,20 +790,21 @@ class CodeEditor(QPlainTextEdit):
                 occurrences.append(sel)
             search_cursor = found
 
+        _cur_line_bg = QColor(get_color("bg2")).rgb()
         _WAVE = QTextCharFormat.UnderlineStyle.WaveUnderline
         current = [
             s for s in self.extraSelections()
-            if s.format.background().color().rgb() == QColor("#131722").rgb()
+            if s.format.background().color().rgb() == _cur_line_bg
             or s.format.underlineStyle() == _WAVE
         ]
         self.setExtraSelections(current + occurrences)
 
     def _clear_occurrence_highlights(self):
-        _OCC_RGB = QColor("#1E2A40").rgb()
+        _sel_rgb = QColor(get_color("sel")).rgb()
         _WAVE = QTextCharFormat.UnderlineStyle.WaveUnderline
         keep = [
             s for s in self.extraSelections()
-            if s.format.background().color().rgb() != _OCC_RGB
+            if s.format.background().color().rgb() != _sel_rgb
         ]
         self.setExtraSelections(keep)
 
@@ -910,11 +978,12 @@ class SearchBar(QFrame):
         self._build_ui()
 
     def _build_ui(self):
-        self.setStyleSheet("""
-            QFrame#searchBar {
-                background: #111820;
-                border-top: 1px solid #1E2030;
-            }
+        bg0 = get_color("bg0"); bd2 = get_color("bd2"); tx2 = get_color("tx2")
+        self.setStyleSheet(f"""
+            QFrame#searchBar {{
+                background: {bg0};
+                border-top: 1px solid {bd2};
+            }}
         """)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 5, 8, 5)
@@ -936,7 +1005,8 @@ class SearchBar(QFrame):
         layout.addWidget(self._chk_regex)
 
         self._lbl_count = QLabel("")
-        self._lbl_count.setStyleSheet("color:#565f89;font-size:11px;min-width:60px;")
+        self._lbl_count.setObjectName("statusLabel")
+        self._lbl_count.setMinimumWidth(60)
         layout.addWidget(self._lbl_count)
 
         btn_prev = QPushButton("↑"); btn_prev.setFixedWidth(28)
@@ -961,7 +1031,7 @@ class SearchBar(QFrame):
 
         btn_close = QPushButton("✕"); btn_close.setFixedWidth(24)
         btn_close.clicked.connect(self.hide)
-        btn_close.setStyleSheet("border:none;color:#565f89;")
+        btn_close.setStyleSheet(f"border:none;color:{tx2};")
         layout.addWidget(btn_close)
 
     def show_find(self):
@@ -995,7 +1065,8 @@ class SearchBar(QFrame):
         count = len(self._results)
         self._lbl_count.setText(f"{count} совп." if count else tr("Не найдено"))
         self._lbl_count.setStyleSheet(
-            "color:#F7768E;font-size:11px;" if not count else "color:#565f89;font-size:11px;"
+            f"color:{get_color('err')};font-size:11px;" if not count
+            else f"color:{get_color('tx2')};font-size:11px;"
         )
         self._current_idx = 0
         self._highlight_results()
@@ -1003,10 +1074,10 @@ class SearchBar(QFrame):
     def _highlight_results(self):
         extras = []
         fmt_all = QTextCharFormat()
-        fmt_all.setBackground(QColor("#2E3148"))
+        fmt_all.setBackground(QColor(get_color("sel")))
         fmt_current = QTextCharFormat()
-        fmt_current.setBackground(QColor("#7AA2F7"))
-        fmt_current.setForeground(QColor("#0D1117"))
+        fmt_current.setBackground(QColor(get_color("ac")))
+        fmt_current.setForeground(QColor(get_color("bg0")))
 
         for i, cursor in enumerate(self._results):
             sel = QTextEdit.ExtraSelection()
@@ -1064,6 +1135,7 @@ class CodeEditorPanel(QWidget):
         self._path = path
         self._error_count = 0
         self._build_ui(content)
+        register_theme_refresh(self._refresh_panel_styles)
 
     def _build_ui(self, content: str):
         layout = QVBoxLayout(self)
@@ -1073,19 +1145,14 @@ class CodeEditorPanel(QWidget):
         # ── Breadcrumb bar ─────────────────────────────────────
         self._breadcrumb = QLabel("")
         self._breadcrumb.setObjectName("breadcrumb")
-        self._breadcrumb.setStyleSheet(
-            "background:#080B12;border-bottom:1px solid #1E2030;color:#7AA2F7;font-size:10px;padding:2px 12px;font-family:'JetBrains Mono',monospace;"
-        )
         self._breadcrumb.setFixedHeight(20)
         layout.addWidget(self._breadcrumb)
+        self._refresh_panel_styles()
 
         # ── Micro toolbar ──────────────────────────────────────
         toolbar = QFrame()
         toolbar.setObjectName("editorToolbar")
         toolbar.setFixedHeight(28)
-        toolbar.setStyleSheet(
-            "QFrame#editorToolbar{background:#0A0D14;border-bottom:1px solid #1E2030;}QPushButton{background:transparent;border:none;color:#565f89;padding:2px 8px;font-size:11px;border-radius:3px;}QPushButton:hover{background:#1E2030;color:#CDD6F4;}"
-        )
         tl = QHBoxLayout(toolbar); tl.setContentsMargins(6, 0, 6, 0); tl.setSpacing(1)
 
         for icon, tip, fn in [
@@ -1129,9 +1196,7 @@ class CodeEditorPanel(QWidget):
 
         btn_run = QPushButton(tr("▶ Запустить"))
         btn_run.setToolTip(tr("Запустить этот скрипт"))
-        btn_run.setStyleSheet(
-            "QPushButton{background:transparent;border:none;color:#39FF84;padding:2px 8px;font-size:11px;}QPushButton:hover{background:#0D2B1A;}"
-        )
+        btn_run.setObjectName("successBtn")
         btn_run.clicked.connect(lambda: self.run_requested.emit(self._path))
         tl.addWidget(btn_run)
 
@@ -1139,7 +1204,7 @@ class CodeEditorPanel(QWidget):
 
         # Language indicator
         self._lbl_lang = QLabel(language_name(self._path) or "Plain Text")
-        self._lbl_lang.setStyleSheet("color:#3B4261;font-size:10px;padding:0 8px;")
+        self._lbl_lang.setObjectName("statusLabel")
         tl.addWidget(self._lbl_lang)
 
         layout.addWidget(toolbar)
@@ -1173,9 +1238,6 @@ class CodeEditorPanel(QWidget):
         status = QFrame()
         status.setObjectName("editorStatus")
         status.setFixedHeight(20)
-        status.setStyleSheet(
-            "QFrame#editorStatus{background:#0A0D14;border-top:1px solid #1E2030;}QLabel{font-size:10px;font-family:'JetBrains Mono',monospace;color:#3B4261;}"
-        )
         sl = QHBoxLayout(status); sl.setContentsMargins(10, 0, 10, 0); sl.setSpacing(16)
 
         self._lbl_pos   = QLabel("Ln 1, Col 1")
@@ -1209,13 +1271,23 @@ class CodeEditorPanel(QWidget):
         self._wc_timer.timeout.connect(self._update_word_count)
         self.editor.textChanged.connect(lambda: self._wc_timer.start())
 
+    def _refresh_panel_styles(self):
+        """Re-apply inline styles after theme change."""
+        bg0 = get_color("bg0"); bd2 = get_color("bd2"); ac = get_color("ac")
+        self._breadcrumb.setStyleSheet(
+            f"background:{bg0};border-bottom:1px solid {bd2};color:{ac};"
+            f"font-size:10px;padding:2px 12px;font-family:'JetBrains Mono',monospace;"
+        )
+
     def _toggle_wrap(self, checked: bool):
         mode = QPlainTextEdit.LineWrapMode.WidgetWidth if checked else QPlainTextEdit.LineWrapMode.NoWrap
         self.editor.setLineWrapMode(mode)
-        self._btn_wrap.setStyleSheet(
-            "QPushButton{background:#1E2A1A;color:#9ECE6A;border:none;padding:2px 8px;font-size:11px;}"
-            if checked else ""
-        )
+        if checked:
+            self._btn_wrap.setStyleSheet(
+                f"QPushButton{{background:transparent;color:{get_color('ok')};border:none;padding:2px 8px;font-size:11px;}}"
+            )
+        else:
+            self._btn_wrap.setStyleSheet("")
 
     def _update_breadcrumb(self):
         """Show current class/function path for Python files."""
@@ -1321,7 +1393,7 @@ class MinimapWidget(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#070A10"))
+        painter.fillRect(self.rect(), QColor(get_color("bg0")))
 
         doc = self._editor.document()
         total_lines = doc.blockCount()
@@ -1338,13 +1410,21 @@ class MinimapWidget(QWidget):
         vp_top = int((scroll_val / max(1, scroll_max + visible_lines))
                      * self.height())
         vp_h = max(10, int(visible_lines / max(1, total_lines) * self.height()))
-        painter.fillRect(0, vp_top, self.MINIMAP_WIDTH, vp_h, QColor("#1E2A40"))
+        vp_color = QColor(get_color("sel")); vp_color.setAlpha(120)
+        painter.fillRect(0, vp_top, self.MINIMAP_WIDTH, vp_h, vp_color)
 
         # Draw simplified text lines
         block = doc.begin()
         y = 0
         max_draw = self.height() // self.CHAR_H
         drawn = 0
+        # Use slightly-lighter-than-bg tones that work on both dark and light
+        _bg1    = QColor(get_color("bg1"))
+        _dim1   = QColor(get_color("bd2"))   # comment lines
+        _dim_ac = QColor(get_color("ac"));  _dim_ac.setAlpha(60)   # def/fn
+        _dim_ok = QColor(get_color("ok"));  _dim_ok.setAlpha(40)   # class
+        _dim_tx = QColor(get_color("tx2")); _dim_tx.setAlpha(40)   # import
+        _dim_n  = QColor(get_color("tx3")); _dim_n.setAlpha(60)    # normal
 
         while block.isValid() and drawn < max_draw:
             text = block.text()
@@ -1352,17 +1432,16 @@ class MinimapWidget(QWidget):
             indent = len(text) - len(stripped)
             x = min(indent, 16) + 2
 
-            # Color approximation based on first token
             if stripped.startswith("#") or stripped.startswith("//"):
-                col = QColor("#2A3050")
+                col = _dim1
             elif stripped.startswith(("def ", "fn ", "func ", "function ")):
-                col = QColor("#2A4870")
+                col = _dim_ac
             elif stripped.startswith(("class ", "struct ", "interface ")):
-                col = QColor("#3A4020")
+                col = _dim_ok
             elif stripped.startswith(("import ", "from ", "use ", "using ")):
-                col = QColor("#2A4035")
+                col = _dim_tx
             else:
-                col = QColor("#1A2028")
+                col = _dim_n
 
             line_width = min(len(stripped) * self.CHAR_W, self.MINIMAP_WIDTH - x)
             if line_width > 0:
@@ -1373,7 +1452,8 @@ class MinimapWidget(QWidget):
             block = block.next()
 
         # Viewport highlight border
-        painter.setPen(QPen(QColor("#3B4C70"), 1))
+        border_c = QColor(get_color("ac")); border_c.setAlpha(150)
+        painter.setPen(QPen(border_c, 1))
         painter.drawRect(0, vp_top, self.MINIMAP_WIDTH - 1, vp_h)
 
     def mousePressEvent(self, event):

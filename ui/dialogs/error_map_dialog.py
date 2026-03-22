@@ -22,6 +22,16 @@ except ImportError:
     def register_listener(cb): pass
     def retranslate_widget(w): pass
 
+try:
+    from ui.theme_manager import get_color, register_theme_refresh
+except ImportError:
+    def get_color(k): return {
+        "bg0": "#07080C", "bg1": "#0E1117", "bg2": "#131722",
+        "bd2": "#1E2030", "tx0": "#CDD6F4", "tx1": "#A9B1D6", "tx2": "#565f89",
+        "sel": "#2E3148", "ok": "#9ECE6A", "err": "#F7768E", "warn": "#E0AF68",
+    }.get(k, "#CDD6F4")
+    def register_theme_refresh(cb): pass
+
 
 class ErrorMapDialog(QDialog):
 
@@ -57,7 +67,7 @@ class ErrorMapDialog(QDialog):
         hdr.addStretch()
 
         self._lbl_stats = QLabel("...")
-        self._lbl_stats.setStyleSheet("color: #565f89; font-size: 11px;")
+        self._lbl_stats.setObjectName("statusLabel")
         hdr.addWidget(self._lbl_stats)
         layout.addLayout(hdr)
 
@@ -110,14 +120,14 @@ class ErrorMapDialog(QDialog):
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self._table.setStyleSheet("""
-            QTableWidget { background: #131722; border: none; gridline-color: #1E2030; }
-            QTableWidget::item { padding: 4px 8px; }
-            QTableWidget::item:selected { background: #2E3148; }
-            QHeaderView::section { background: #0A0D14; border: none;
-                border-bottom: 1px solid #1E2030; padding: 6px 8px;
-                color: #565f89; font-size: 11px; }
-        """)
+        self._table.setStyleSheet(
+            f"QTableWidget {{background:{get_color('bg2')};border:none;gridline-color:{get_color('bd2')};}} "
+            f"QTableWidget::item {{padding:4px 8px;}} "
+            f"QTableWidget::item:selected {{background:{get_color('sel')};}} "
+            f"QHeaderView::section {{background:{get_color('bg0')};border:none;"
+            f"border-bottom:1px solid {get_color('bd2')};padding:6px 8px;"
+            f"color:{get_color('tx2')};font-size:11px;}}"
+        )
         self._table.currentCellChanged.connect(self._on_row_selected)
         splitter.addWidget(self._table)
 
@@ -153,7 +163,7 @@ class ErrorMapDialog(QDialog):
         self._detail_view = QTextEdit()
         self._detail_view.setReadOnly(True)
         self._detail_view.setFont(QFont("JetBrains Mono,Consolas", 11))
-        self._detail_view.setStyleSheet("background: #0A0D14; border: none; color: #CDD6F4;")
+        self._detail_view.setStyleSheet(f"background:{get_color('bg0')};border:none;color:{get_color('tx0')};")
         self._detail_view.setMaximumHeight(200)
         dl.addWidget(self._detail_view)
         splitter.addWidget(detail_w)
@@ -175,13 +185,13 @@ class ErrorMapDialog(QDialog):
         self._avoid_list.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._avoid_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self._avoid_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self._avoid_list.setStyleSheet("""
-            QTableWidget { background: #131722; border: none; gridline-color: #1E2030; }
-            QTableWidget::item { padding: 4px 8px; }
-            QTableWidget::item:selected { background: #2E3148; }
-            QHeaderView::section { background: #0A0D14; border: none;
-                border-bottom: 1px solid #1E2030; padding: 6px 8px; color: #565f89; }
-        """)
+        self._avoid_list.setStyleSheet(
+            f"QTableWidget {{background:{get_color('bg2')};border:none;gridline-color:{get_color('bd2')};}} "
+            f"QTableWidget::item {{padding:4px 8px;}} "
+            f"QTableWidget::item:selected {{background:{get_color('sel')};}} "
+            f"QHeaderView::section {{background:{get_color('bg0')};border:none;"
+            f"border-bottom:1px solid {get_color('bd2')};padding:6px 8px;color:{get_color('tx2')};}}"
+        )
         layout.addWidget(self._avoid_list)
 
         btn_row = QHBoxLayout()
@@ -256,9 +266,9 @@ class ErrorMapDialog(QDialog):
 
         self._table.setRowCount(len(records))
         status_colors = {
-            "open": "#E0AF68",
-            "resolved": "#9ECE6A",
-            "ignored": "#565f89",
+            "open":     get_color("warn"),
+            "resolved": get_color("ok"),
+            "ignored":  get_color("tx2"),
         }
 
         for row, rec in enumerate(records):
@@ -268,7 +278,7 @@ class ErrorMapDialog(QDialog):
             self._table.setItem(row, 3, QTableWidgetItem(str(rec.occurrences)))
 
             status_item = QTableWidgetItem(rec.status)
-            color = status_colors.get(rec.status, "#CDD6F4")
+            color = status_colors.get(rec.status, get_color("tx0"))
             status_item.setForeground(QColor(color))
             self._table.setItem(row, 4, status_item)
 

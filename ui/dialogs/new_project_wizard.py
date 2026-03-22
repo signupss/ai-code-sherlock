@@ -14,6 +14,15 @@ from PyQt6.QtWidgets import (
 from services.project_manager import ProjectMode
 
 try:
+    from ui.theme_manager import get_color, register_theme_refresh
+except ImportError:
+    def get_color(k): return {
+        "bg1": "#0E1117", "bg3": "#1A1D2E", "bd2": "#1E2030",
+        "tx0": "#CDD6F4", "tx1": "#A9B1D6", "tx2": "#565f89",
+    }.get(k, "#CDD6F4")
+    def register_theme_refresh(cb): pass
+
+try:
     from ui.i18n import tr, register_listener
 except ImportError:
     def tr(s): return s
@@ -30,7 +39,9 @@ class NewProjectWizard(QDialog):
         self.setModal(True)
         self._result: tuple | None = None
         self._build_ui()
+        self._refresh_styles()
         register_listener(self._retranslate)
+        register_theme_refresh(self._refresh_styles)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -39,6 +50,23 @@ class NewProjectWizard(QDialog):
             apply_dark_titlebar(self)
         except Exception:
             pass
+
+    def _refresh_styles(self) -> None:
+        """Apply theme-aware inline styles."""
+        tx0 = get_color("tx0")
+        tx2 = get_color("tx2")
+        bd2 = get_color("bd2")
+        fs  = "13px"
+        fs_s = "11px"
+        # Bold mode labels
+        for lbl in (self._lbl_new, self._lbl_ex):
+            lbl.setStyleSheet(f"color:{tx0}; font-size:{fs}; font-weight:bold;")
+        # Description labels
+        for lbl in (self._desc_new, self._desc_ex):
+            lbl.setStyleSheet(f"color:{tx2}; font-size:{fs_s};")
+        # Find all hSeparator frames and style them
+        for obj in self.findChildren(QFrame, "hSeparator"):
+            obj.setStyleSheet(f"background:{bd2}; max-height:1px;")
 
     def _retranslate(self, _lang: str = ""):
         self.setWindowTitle(tr("Новый проект — AI Code Sherlock"))
@@ -61,15 +89,15 @@ class NewProjectWizard(QDialog):
         layout.setSpacing(16)
 
         self._title_lbl = QLabel(tr("🆕 Создать новый проект"))
-        self._title_lbl.setStyleSheet("font-size:16px;font-weight:bold;color:#CDD6F4;")
+        self._title_lbl.setObjectName("titleLabel")
         layout.addWidget(self._title_lbl)
 
         self._sub_lbl = QLabel(tr("Настрой проект перед началом работы с AI Code Sherlock"))
-        self._sub_lbl.setStyleSheet("color:#565f89;font-size:12px;")
+        self._sub_lbl.setObjectName("statusLabel")
         layout.addWidget(self._sub_lbl)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background:#1E2030;")
+        sep.setObjectName("hSeparator")
         layout.addWidget(sep)
 
         # Name + folder
@@ -104,16 +132,16 @@ class NewProjectWizard(QDialog):
         new_info = QWidget()
         ni_l = QVBoxLayout(new_info); ni_l.setContentsMargins(0, 0, 0, 0); ni_l.setSpacing(2)
         self._lbl_new = QLabel(tr("🆕 Новый проект — разработка с нуля"))
-        self._lbl_new.setStyleSheet("color:#CDD6F4;font-size:13px;font-weight:bold;")
+        self._lbl_new.setObjectName("modeLabelBold")
         self._desc_new = QLabel(tr("AI даёт полные реализации кода, объяснения архитектуры.\nПодходит для создания новых скриптов и приложений."))
-        self._desc_new.setStyleSheet("color:#565f89;font-size:11px;")
+        self._desc_new.setObjectName("modeDesc")
         self._desc_new.setWordWrap(True)
         ni_l.addWidget(self._lbl_new); ni_l.addWidget(self._desc_new)
         new_row.addWidget(new_info); new_row.addStretch()
         ml.addLayout(new_row)
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("background:#1E2030;max-height:1px;")
+        sep2.setObjectName("hSeparator")
         ml.addWidget(sep2)
 
         self._radio_existing = QRadioButton()
@@ -122,9 +150,9 @@ class NewProjectWizard(QDialog):
         exist_info = QWidget()
         ei_l = QVBoxLayout(exist_info); ei_l.setContentsMargins(0, 0, 0, 0); ei_l.setSpacing(2)
         self._lbl_ex = QLabel(tr("🔧 Существующий проект — доработка"))
-        self._lbl_ex.setStyleSheet("color:#CDD6F4;font-size:13px;font-weight:bold;")
+        self._lbl_ex.setObjectName("modeLabelBold")
         self._desc_ex = QLabel(tr("AI даёт ТОЛЬКО точечные патчи [SEARCH/REPLACE].\nПодходит для улучшения готового кода без переписывания."))
-        self._desc_ex.setStyleSheet("color:#565f89;font-size:11px;")
+        self._desc_ex.setObjectName("modeDesc")
         self._desc_ex.setWordWrap(True)
         ei_l.addWidget(self._lbl_ex); ei_l.addWidget(self._desc_ex)
         exist_row.addWidget(exist_info); exist_row.addStretch()

@@ -44,6 +44,15 @@ from ui.dialogs.error_map_dialog import ErrorMapDialog
 from ui.widgets.file_tree import FileTreeWidget
 
 try:
+    from ui.theme_manager import get_color, register_theme_refresh
+except ImportError:
+    def get_color(k): return {"bg0":"#07080C","bg1":"#0E1117","bg2":"#131722",
+        "bd":"#2E3148","bd2":"#1E2030","tx0":"#CDD6F4","tx1":"#A9B1D6",
+        "tx2":"#565f89","tx3":"#3B4261","ac":"#7AA2F7","ok":"#9ECE6A",
+        "err":"#F7768E","warn":"#E0AF68","sel":"#2E3148"}.get(k,"#CDD6F4")
+    def register_theme_refresh(cb): pass
+
+try:
     from ui.i18n import tr, register_listener, retranslate_widget
 except ImportError:
     def tr(s): return s
@@ -110,13 +119,13 @@ class PatchCard(QFrame):
         hdr = QHBoxLayout()
         num = QLabel(f"{tr("ПАТЧ #")}{idx + 1}")
         num.setObjectName("sectionLabel")
-        num.setStyleSheet("color: #E0AF68;")
+        num.setObjectName("accentLabel")
         fp_text = Path(self.patch.file_path).name if self.patch.file_path else tr("текущий файл")
         fp = QLabel(fp_text)
-        fp.setStyleSheet("font-size: 12px; color: #7AA2F7;")
+        fp.setObjectName("accentLabel")
 
         self._status_lbl = QLabel(tr("● ожидает"))
-        self._status_lbl.setStyleSheet("font-size: 11px; color: #E0AF68;")
+        self._status_lbl.setObjectName("statusLabel")
 
         hdr.addWidget(num)
         hdr.addWidget(fp)
@@ -127,7 +136,7 @@ class PatchCard(QFrame):
         if self.patch.description:
             desc = QLabel(self.patch.description)
             desc.setWordWrap(True)
-            desc.setStyleSheet("font-size: 12px; color: #A9B1D6;")
+            desc.setObjectName("statusLabel")
             layout.addWidget(desc)
 
         diff_tabs = QTabWidget()
@@ -271,22 +280,22 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 0, 12, 0)
 
         logo = QLabel("🔍 AI Code Sherlock")
-        logo.setStyleSheet("font-size:15px;font-weight:bold;color:#7AA2F7;font-family:sans-serif;")
+        logo.setStyleSheet(f"font-size:15px;font-weight:bold;color:{get_color('ac')};font-family:sans-serif;")
         layout.addWidget(logo)
 
-        badge = QLabel("ACTIVE")
-        badge.setStyleSheet("background:#1A2E1A;color:#9ECE6A;border:1px solid #9ECE6A;border-radius:4px;padding:1px 7px;font-size:9px;font-weight:bold;")
-        layout.addWidget(badge)
+        self._badge_active = QLabel("ACTIVE")
+        self._badge_active.setStyleSheet(f"background:{get_color('bg1')};color:{get_color('ok')};border:1px solid {get_color('ok')};border-radius:4px;padding:1px 7px;font-size:9px;font-weight:bold;")
+        layout.addWidget(self._badge_active)
 
         # Project mode indicator
         self._lbl_mode = QLabel(tr("🆕 Новый проект"))
-        self._lbl_mode.setStyleSheet("color:#E0AF68;font-size:11px;padding:0 8px;")
+        self._lbl_mode.setObjectName("accentLabel")
         layout.addWidget(self._lbl_mode)
 
         layout.addStretch()
 
         lbl = QLabel(tr("Модель:"))
-        lbl.setStyleSheet("color:#565f89;font-size:12px;")
+        lbl.setObjectName("statusLabel")
         layout.addWidget(lbl)
 
         self._cmb_model = QComboBox()
@@ -295,7 +304,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._cmb_model)
 
         self._lbl_model_status = QLabel("●")
-        self._lbl_model_status.setStyleSheet("color:#565f89;font-size:14px;")
+        self._lbl_model_status.setObjectName("statusLabel")
         layout.addWidget(self._lbl_model_status)
 
         layout.addSpacing(10)
@@ -316,7 +325,7 @@ class MainWindow(QMainWindow):
 
         def sep():
             s = QFrame(); s.setFrameShape(QFrame.Shape.VLine)
-            s.setFixedWidth(1); s.setStyleSheet("background:#1E2030;margin:6px 2px;")
+            s.setFixedWidth(1); s.setStyleSheet(f"background:{get_color('bd2')};margin:6px 2px;")
             return s
 
         btn_new = QPushButton(tr("📋 Новый проект")); btn_new.clicked.connect(self._new_project)
@@ -355,17 +364,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(btn_errormap)
 
         self._btn_pipeline = QPushButton(tr("⚡ Pipeline"))
-        self._btn_pipeline.setStyleSheet(
-            "QPushButton{background:#1A1A2E;color:#BB9AF7;border:1px solid #9B59B6;border-radius:5px;padding:3px 10px;font-weight:bold;}QPushButton:hover{background:#252040;border-color:#BB9AF7;color:#D4AAFF;}"
-        )
+        self._btn_pipeline.setObjectName("primaryBtn")
         self._btn_pipeline.setToolTip(tr("Настроить и запустить Auto-Improve Pipeline"))
         self._btn_pipeline.clicked.connect(self._open_pipeline_dialog)
         layout.addWidget(self._btn_pipeline)
 
         btn_run_script = QPushButton(tr("▶ Запустить скрипт"))
-        btn_run_script.setStyleSheet(
-            "QPushButton{background:#0D2B1A;color:#39FF84;border:1px solid #22B35A;border-radius:5px;padding:3px 10px;font-weight:bold;}QPushButton:hover{background:#133D24;border-color:#39FF84;color:#5AFF9A;}"
-        )
+        btn_run_script.setObjectName("successBtn")
         btn_run_script.setToolTip(tr("Запустить активный файл или выбрать скрипт из проекта."))
         btn_run_script.clicked.connect(self._run_script_manually)
         layout.addWidget(btn_run_script)
@@ -377,13 +382,13 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         self._lbl_signal = QLabel(tr("○ Сигнал"))
-        self._lbl_signal.setStyleSheet("color:#565f89;font-size:11px;")
+        self._lbl_signal.setObjectName("statusLabel")
         layout.addWidget(self._lbl_signal)
 
         layout.addWidget(sep())
 
         self._lbl_processing = QLabel(tr("⟳ Обработка..."))
-        self._lbl_processing.setStyleSheet("color:#7AA2F7;font-size:12px;")
+        self._lbl_processing.setObjectName("accentLabel")
         self._lbl_processing.hide()
         layout.addWidget(self._lbl_processing)
 
@@ -420,19 +425,19 @@ class MainWindow(QMainWindow):
         hl = QHBoxLayout(hdr); hl.setContentsMargins(12, 0, 8, 0)
         lbl = QLabel(tr("КОД")); lbl.setObjectName("sectionLabel")
         self._lbl_active_file = QLabel(tr("нет файла"))
-        self._lbl_active_file.setStyleSheet("color:#7AA2F7;font-size:11px;")
+        self._lbl_active_file.setObjectName("accentLabel")
         hl.addWidget(lbl); hl.addStretch(); hl.addWidget(self._lbl_active_file)
         layout.addWidget(hdr)
 
         # Context bar
         self._ctx_bar = QFrame()
-        self._ctx_bar.setStyleSheet("background:#0A0D14;border-bottom:1px solid #1E2030;")
+        self._ctx_bar.setObjectName("panelHeader")
         self._ctx_bar.setFixedHeight(22)
         cb_l = QHBoxLayout(self._ctx_bar); cb_l.setContentsMargins(10, 0, 10, 0)
         self._lbl_ctx_files = QLabel(tr("0 файлов"))
-        self._lbl_ctx_files.setStyleSheet("color:#565f89;font-size:10px;")
+        self._lbl_ctx_files.setObjectName("statusLabel")
         self._lbl_ctx_tokens = QLabel(tr("~0 токенов"))
-        self._lbl_ctx_tokens.setStyleSheet("color:#565f89;font-size:10px;")
+        self._lbl_ctx_tokens.setObjectName("statusLabel")
         cb_l.addWidget(self._lbl_ctx_files); cb_l.addStretch()
         cb_l.addWidget(self._lbl_ctx_tokens)
         layout.addWidget(self._ctx_bar)
@@ -518,29 +523,27 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(btn_clr)
 
         # ── Interactive stdin row ──────────────────────────
-        stdin_frame = QFrame()
-        stdin_frame.setFixedHeight(36)
-        stdin_frame.setStyleSheet(
-            "QFrame { background:#0A0D14; border-top: 1px solid #1E2030; }"
-        )
+        self._stdin_frame = QFrame()
+        self._stdin_frame.setFixedHeight(36)
+        self._stdin_frame.setObjectName("inputArea")
+        stdin_frame = self._stdin_frame
         stdin_layout = QHBoxLayout(stdin_frame)
         stdin_layout.setContentsMargins(8, 4, 8, 4)
         stdin_layout.setSpacing(6)
 
         stdin_lbl = QLabel("↳")
-        stdin_lbl.setStyleSheet("color:#565f89; font-size:14px;")
+        stdin_lbl.setObjectName("statusLabel")
         stdin_layout.addWidget(stdin_lbl)
 
         self._stdin_input = QLineEdit()
         self._stdin_input.setPlaceholderText(
             tr("Ввод для запущенного скрипта... (Enter — отправить)"))
         self._stdin_input.setStyleSheet(
-            "QLineEdit { background:#111520; border:1px solid #2E3148;"
-            " border-radius:4px; color:#CDD6F4;"
-            " font-family: 'JetBrains Mono',Consolas; font-size:11px;"
-            " padding:2px 8px; }"
-            "QLineEdit:focus { border-color:#7AA2F7; }"
-            "QLineEdit:disabled { color:#3B4261; border-color:#1E2030; }"
+            f"QLineEdit {{ background:{get_color('bg2')}; border:1px solid {get_color('bd')};"
+            f" border-radius:4px; color:{get_color('tx0')};"
+            f" font-family:'JetBrains Mono',Consolas; font-size:11px; padding:2px 8px; }}"
+            f"QLineEdit:focus {{ border-color:{get_color('ac')}; }}"
+            f"QLineEdit:disabled {{ color:{get_color('tx3')}; border-color:{get_color('bd2')}; }}"
         )
         self._stdin_input.setEnabled(False)
         self._stdin_input.returnPressed.connect(self._send_script_stdin)
@@ -549,11 +552,8 @@ class MainWindow(QMainWindow):
         btn_stdin_send = QPushButton("⏎")
         btn_stdin_send.setFixedWidth(32)
         btn_stdin_send.setToolTip(tr("Отправить ввод скрипту"))
-        btn_stdin_send.setStyleSheet(
-            "QPushButton { background:#1A2030; border:1px solid #2E3148;"
-            " border-radius:4px; color:#7AA2F7; font-size:14px; }"
-            "QPushButton:hover { background:#252040; border-color:#7AA2F7; }"
-        )
+        btn_stdin_send.setObjectName("iconBtn")
+        btn_stdin_send.setStyleSheet("")
         btn_stdin_send.clicked.connect(self._send_script_stdin)
         stdin_layout.addWidget(btn_stdin_send)
 
@@ -580,7 +580,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(hdr)
 
         self._ctx_summary = QLabel(tr("Контекст не построен"))
-        self._ctx_summary.setStyleSheet("color:#565f89;font-size:11px;")
+        self._ctx_summary.setObjectName("statusLabel")
         self._ctx_summary.setWordWrap(True)
         layout.addWidget(self._ctx_summary)
 
@@ -608,7 +608,7 @@ class MainWindow(QMainWindow):
         hdr.addStretch()
 
         self._lbl_monitor_status = QLabel(tr("○ Остановлен"))
-        self._lbl_monitor_status.setStyleSheet("color:#565f89;font-size:11px;")
+        self._lbl_monitor_status.setObjectName("statusLabel")
         hdr.addWidget(self._lbl_monitor_status)
 
         btn_start = QPushButton(tr("▶ Запустить"))
@@ -632,7 +632,7 @@ class MainWindow(QMainWindow):
         # Stats row
         stats = QHBoxLayout()
         self._lbl_signal_count = QLabel(tr("Событий: 0"))
-        self._lbl_signal_count.setStyleSheet("color:#565f89;font-size:11px;")
+        self._lbl_signal_count.setObjectName("statusLabel")
         stats.addWidget(self._lbl_signal_count); stats.addStretch()
         layout.addLayout(stats)
 
@@ -687,7 +687,7 @@ class MainWindow(QMainWindow):
 
         pt_row = QHBoxLayout(); pt_row.setSpacing(4)
         lbl_pt = QLabel(tr("Патчить:"))
-        lbl_pt.setStyleSheet("color:#565f89;font-size:10px;min-width:46px;")
+        lbl_pt.setObjectName("statusLabel")
         pt_row.addWidget(lbl_pt)
 
         # Chips container — scrollable horizontal area
@@ -704,34 +704,28 @@ class MainWindow(QMainWindow):
         pt_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         pt_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         pt_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        pt_scroll.setStyleSheet("background:transparent;")
+        pass  # pt_scroll background — inherits theme
         pt_row.addWidget(pt_scroll, stretch=1)
 
         # Buttons
         btn_pt_add = QPushButton(tr("＋ файл"))
         btn_pt_add.setFixedHeight(22)
         btn_pt_add.setToolTip(tr("Добавить файл в цели патчинга для этого запроса"))
-        btn_pt_add.setStyleSheet(
-            "QPushButton{background:#1A1D2E;border:1px solid #2E3148;border-radius:4px;color:#BB9AF7;font-size:10px;padding:1px 8px;}QPushButton:hover{background:#252040;border-color:#BB9AF7;}"
-        )
+        btn_pt_add.setObjectName("iconBtn")
         btn_pt_add.clicked.connect(self._add_patch_target_file)
         pt_row.addWidget(btn_pt_add)
 
         btn_pt_folder = QPushButton(tr("＋ папка"))
         btn_pt_folder.setFixedHeight(22)
         btn_pt_folder.setToolTip(tr("Добавить все .py файлы из папки как цели патчинга"))
-        btn_pt_folder.setStyleSheet(
-            "QPushButton{background:#1A1D2E;border:1px solid #2E3148;border-radius:4px;color:#BB9AF7;font-size:10px;padding:1px 8px;}QPushButton:hover{background:#252040;border-color:#BB9AF7;}"
-        )
+        btn_pt_folder.setObjectName("iconBtn")
         btn_pt_folder.clicked.connect(self._add_patch_target_folder)
         pt_row.addWidget(btn_pt_folder)
 
         btn_pt_clr = QPushButton("✕")
         btn_pt_clr.setFixedSize(22, 22)
         btn_pt_clr.setToolTip(tr("Очистить все дополнительные цели патчинга"))
-        btn_pt_clr.setStyleSheet(
-            "QPushButton{background:transparent;border:none;color:#565f89;font-size:11px;}QPushButton:hover{color:#F7768E;}"
-        )
+        btn_pt_clr.setObjectName("iconBtn")
         btn_pt_clr.clicked.connect(self._clear_patch_targets)
         pt_row.addWidget(btn_pt_clr)
 
@@ -744,7 +738,7 @@ class MainWindow(QMainWindow):
 
         # Strategy selector
         strat_lbl = QLabel(tr("Стратегия:"))
-        strat_lbl.setStyleSheet("color:#565f89;font-size:11px;")
+        strat_lbl.setObjectName("statusLabel")
         ai_row.addWidget(strat_lbl)
 
         self._cmb_chat_strategy = QComboBox()
@@ -777,7 +771,7 @@ class MainWindow(QMainWindow):
 
         # Strategy description tooltip label
         self._lbl_strat_desc = QLabel("")
-        self._lbl_strat_desc.setStyleSheet("color:#3B4261;font-size:10px;")
+        self._lbl_strat_desc.setObjectName("statusLabel")
         self._lbl_strat_desc.setWordWrap(False)
         ai_row.addWidget(self._lbl_strat_desc)
 
@@ -788,7 +782,7 @@ class MainWindow(QMainWindow):
         self._chk_consensus.setToolTip(
             tr("Запросить несколько моделей и выбрать лучший ответ")
         )
-        self._chk_consensus.setStyleSheet("font-size:11px;color:#A9B1D6;")
+        self._chk_consensus.setObjectName("statusLabel")
         self._chk_consensus.toggled.connect(self._on_chat_consensus_toggled)
         ai_row.addWidget(self._chk_consensus)
 
@@ -821,7 +815,7 @@ class MainWindow(QMainWindow):
 
         # Variants spinbox (how many answer variants to request)
         variants_lbl = QLabel(tr("Вариантов:"))
-        variants_lbl.setStyleSheet("color:#565f89;font-size:11px;")
+        variants_lbl.setObjectName("statusLabel")
         ai_row.addWidget(variants_lbl)
 
         self._spn_variants = QSpinBox()
@@ -1059,11 +1053,11 @@ class MainWindow(QMainWindow):
         self._cmb_consensus_mode.setVisible(enabled)
         self._btn_consensus_models.setVisible(enabled)
         if enabled:
-            self._chk_consensus.setStyleSheet("font-size:11px;color:#7AA2F7;")
+            self._chk_consensus.setObjectName("statusLabel")
             # Update button label with selected count
             self._update_consensus_btn_label()
         else:
-            self._chk_consensus.setStyleSheet("font-size:11px;color:#A9B1D6;")
+            self._chk_consensus.setObjectName("statusLabel")
 
     def _pick_custom_strategy(self):
         """Show popup to pick a saved custom strategy or clear active one."""
@@ -1146,7 +1140,7 @@ class MainWindow(QMainWindow):
         info = QLabel(
             tr("Выбери модели для участия в консенсусе.\nЕсли ничего не выбрано — используются все модели.")
         )
-        info.setStyleSheet("color:#565f89;font-size:11px;")
+        info.setObjectName("statusLabel")
         info.setWordWrap(True)
         layout.addWidget(info)
 
@@ -1191,7 +1185,7 @@ class MainWindow(QMainWindow):
         hl = QHBoxLayout(hdr); hl.setContentsMargins(12, 0, 8, 0)
         self._lbl_patches_header = QLabel(tr("ПАТЧИ AI")); self._lbl_patches_header.setObjectName("sectionLabel")
         self._lbl_patch_count = QLabel(tr("0 патчей"))
-        self._lbl_patch_count.setStyleSheet("color:#E0AF68;font-size:11px;")
+        self._lbl_patch_count.setObjectName("accentLabel")
         self._btn_apply_all = QPushButton(tr("✓ Все")); self._btn_apply_all.setObjectName("successBtn")
         self._btn_apply_all.setFixedWidth(55); self._btn_apply_all.setToolTip(tr("Применить все"))
         self._btn_apply_all.clicked.connect(self._apply_all_patches)
@@ -1217,7 +1211,7 @@ class MainWindow(QMainWindow):
 
         self._empty_patches = QLabel(tr("🔍\n\nПатчей нет\nОтправь запрос AI"))
         self._empty_patches.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_patches.setStyleSheet("color:#2E3148;font-size:13px;padding:30px;")
+        self._empty_patches.setObjectName("statusLabel")
         layout.addWidget(self._empty_patches)
 
         # Register language listener for this panel
@@ -1251,7 +1245,7 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         self._lbl_status_model = QLabel(tr("нет модели"))
-        self._lbl_status_model.setStyleSheet("color:#7AA2F7;font-size:11px;")
+        self._lbl_status_model.setObjectName("accentLabel")
         layout.addWidget(self._lbl_status_model)
 
         self._lbl_status_right = QLabel("Ln 1, Col 1")
@@ -1278,6 +1272,119 @@ class MainWindow(QMainWindow):
 
         self._signal_monitor.status_changed.connect(self._on_signal_status)
         self._signal_monitor.event_received.connect(self._on_signal_event)
+
+        # Register theme refresh so inline styles update when user switches theme
+        register_theme_refresh(self._refresh_theme_styles)
+
+    def _refresh_theme_styles(self):
+        ac   = get_color("ac")
+        bg0  = get_color("bg0")
+        bg1  = get_color("bg1")
+        bg2  = get_color("bg2")
+        bg3  = get_color("bg3")
+        bd   = get_color("bd")
+        bd2  = get_color("bd2")
+        tx0  = get_color("tx0")
+        tx1  = get_color("tx1")
+        tx2  = get_color("tx2")
+        tx3  = get_color("tx3")
+        ok   = get_color("ok")
+        err  = get_color("err")
+        warn = get_color("warn")
+        sel  = get_color("sel")
+
+        # Title bar
+        if hasattr(self, "_lbl_mode"):
+            self._lbl_mode.setStyleSheet(f"color:{warn};font-size:11px;padding:0 8px;")
+        if hasattr(self, "_lbl_model_status"):
+            self._lbl_model_status.setStyleSheet(f"color:{tx2};font-size:14px;")
+        if hasattr(self, "_badge_active"):
+            self._badge_active.setStyleSheet(
+                f"background:{bg1};color:{ok};border:1px solid {ok};"
+                f"border-radius:4px;padding:1px 7px;font-size:9px;font-weight:bold;"
+            )
+
+        # Toolbar separators
+        for sep in self.findChildren(__import__("PyQt6.QtWidgets", fromlist=["QFrame"]).QFrame):
+            if sep.frameShape().value == 5:  # VLine
+                sep.setStyleSheet(f"background:{bd2};margin:6px 2px;")
+
+        # Toolbar special buttons  
+        if hasattr(self, "_btn_pipeline"):
+            self._btn_pipeline.setStyleSheet(
+                f"QPushButton{{background:{bg3};color:{ac};border:1px solid {bd};"
+                f"border-radius:5px;padding:3px 10px;font-weight:bold;}}"
+                f"QPushButton:hover{{background:{sel};border-color:{ac};color:{tx0};}}"
+            )
+
+        # Editor context bar
+        if hasattr(self, "_ctx_bar"):
+            self._ctx_bar.setStyleSheet(f"background:{bg0};border-bottom:1px solid {bd2};")
+        if hasattr(self, "_lbl_ctx_files"):
+            self._lbl_ctx_files.setStyleSheet(f"color:{tx2};font-size:10px;")
+        if hasattr(self, "_lbl_ctx_tokens"):
+            self._lbl_ctx_tokens.setStyleSheet(f"color:{tx2};font-size:10px;")
+        if hasattr(self, "_lbl_active_file"):
+            self._lbl_active_file.setStyleSheet(f"color:{ac};font-size:11px;")
+
+        # Input area
+        if hasattr(self, "_lbl_tokens"):
+            self._lbl_tokens.setStyleSheet(f"color:{tx2};font-size:11px;")
+        if hasattr(self, "_lbl_strat_desc"):
+            self._lbl_strat_desc.setStyleSheet(f"color:{tx3};font-size:10px;")
+        if hasattr(self, "_chk_consensus"):
+            self._chk_consensus.setStyleSheet(f"font-size:11px;color:{tx1};")
+
+        # Signals / status
+        if hasattr(self, "_lbl_signal"):
+            self._lbl_signal.setStyleSheet(f"color:{tx2};font-size:11px;")
+        if hasattr(self, "_lbl_processing"):
+            self._lbl_processing.setStyleSheet(f"color:{ac};font-size:12px;")
+        if hasattr(self, "_lbl_monitor_status"):
+            self._lbl_monitor_status.setStyleSheet(f"color:{tx2};font-size:11px;")
+        if hasattr(self, "_lbl_signal_count"):
+            self._lbl_signal_count.setStyleSheet(f"color:{tx2};font-size:11px;")
+
+        # Context tab
+        if hasattr(self, "_ctx_summary"):
+            self._ctx_summary.setStyleSheet(f"color:{tx2};font-size:11px;")
+
+        # Stdin row in Logs tab
+        if hasattr(self, "_stdin_input"):
+            self._stdin_input.setStyleSheet(
+                f"QLineEdit {{ background:{bg2}; border:1px solid {bd};"
+                f" border-radius:4px; color:{tx0};"
+                f" font-family: 'JetBrains Mono',Consolas; font-size:11px;"
+                f" padding:2px 8px; }}"
+                f"QLineEdit:focus {{ border-color:{ac}; }}"
+                f"QLineEdit:disabled {{ color:{tx3}; border-color:{bd2}; }}"
+            )
+
+        # Patch targets row
+        if hasattr(self, "_lbl_patch_count"):
+            self._lbl_patch_count.setStyleSheet(f"color:{warn};font-size:11px;")
+        if hasattr(self, "_empty_patches"):
+            self._empty_patches.setStyleSheet(f"color:{bd};font-size:13px;padding:30px;")
+
+        # Status bar
+        if hasattr(self, "_lbl_status_model"):
+            self._lbl_status_model.setStyleSheet(f"color:{ac};font-size:11px;")
+
+        # stdin frame background
+        if hasattr(self, "_stdin_frame"):
+            self._stdin_frame.setStyleSheet(
+                f"QFrame {{ background:{bg0}; border-top:1px solid {bd2}; }}"
+            )
+
+        # Log view — force palette reset so QSS background takes effect immediately
+        if hasattr(self, "_log_view"):
+            from PyQt6.QtGui import QPalette
+            p = self._log_view.palette()
+            p.setColor(QPalette.ColorRole.Base,   __import__("PyQt6.QtGui", fromlist=["QColor"]).QColor(bg0))
+            p.setColor(QPalette.ColorRole.Text,   __import__("PyQt6.QtGui", fromlist=["QColor"]).QColor(tx0))
+            p.setColor(QPalette.ColorRole.Window, __import__("PyQt6.QtGui", fromlist=["QColor"]).QColor(bg0))
+            self._log_view.setPalette(p)
+            self._log_view.viewport().update()
 
     # ══════════════════════════════════════════════════════
     #  INITIALIZATION
@@ -1319,6 +1426,7 @@ class MainWindow(QMainWindow):
         self._add_system_message(
             tr("AI Code Sherlock готов к работе.\nОткрой проект (📁) или файл (📄), выбери модель и начни работу.")
         )
+        self._refresh_theme_styles()
 
     def _activate_model(self, model: ModelDefinition):
         async def _switch():
@@ -1421,6 +1529,8 @@ class MainWindow(QMainWindow):
         do_compress    = getattr(self._settings, "compress_context", True)
         max_history    = getattr(self._settings, "max_conversation_history", 12)
         full_logs      = getattr(self._settings, "include_full_logs", False)
+        chat_timeout   = getattr(self._settings, "chat_timeout_seconds", 600)
+        chat_max_tries = max(1, getattr(self._settings, "chat_retry_count", 3) + 1)
 
         if sherlock and context.error_logs:
             async def _sherlock_task():
@@ -1598,10 +1708,36 @@ class MainWindow(QMainWindow):
                         signals.status.emit(tr("Генерирую ответ..."))
 
                     full_chunks: list[str] = []
-                    async for chunk in self._model_manager.active_provider.stream(messages):
-                        clean = self._response_filter.filter(chunk).filtered
-                        full_chunks.append(clean)
-                        signals.chunk.emit(clean)
+                    last_err = ""
+                    for _attempt in range(chat_max_tries):
+                        if _attempt > 0:
+                            _wait = min(10 * _attempt, 30)
+                            signals.status.emit(
+                                f"⏳ {tr('Повтор')} {_attempt + 1}/{chat_max_tries}, {tr('жду')} {_wait}{tr('с')}..."
+                            )
+                            await asyncio.sleep(_wait)
+                        try:
+                            full_chunks = []
+                            async def _stream_with_timeout():
+                                async for chunk in self._model_manager.active_provider.stream(messages):
+                                    clean = self._response_filter.filter(chunk).filtered
+                                    full_chunks.append(clean)
+                                    signals.chunk.emit(clean)
+                            await asyncio.wait_for(_stream_with_timeout(), timeout=chat_timeout)
+                            if full_chunks:
+                                break  # success
+                            last_err = "пустой ответ"
+                        except asyncio.TimeoutError:
+                            last_err = f"таймаут {chat_timeout}с"
+                            signals.status.emit(f"⏱ {tr('Таймаут')}: {last_err}")
+                        except Exception as _e:
+                            last_err = str(_e)[:80]
+                            signals.status.emit(f"⚠ {last_err}")
+                    if not full_chunks:
+                        signals.error.emit(
+                            f"AI не ответил после {chat_max_tries} попыток. {last_err}"
+                        )
+                        return
 
                     full = "".join(full_chunks)
                     full = self._response_filter.filter(full).filtered
@@ -1758,18 +1894,13 @@ class MainWindow(QMainWindow):
 
         hdr = QHBoxLayout()
         rl = QLabel(f"{tr('Шерлок')}  •  {model_name}")
-        rl.setStyleSheet("color:#9ECE6A;font-size:11px;font-weight:bold;")
+        rl.setStyleSheet(f"color:{get_color('ok')};font-size:11px;font-weight:bold;")
         hdr.addWidget(rl)
         hdr.addStretch()
 
-        # "Save as file" button — lets the user save AI-generated code directly
+        # "Save as file" button
         btn_save = QPushButton(tr("💾 Сохранить как файл"))
-        btn_save.setObjectName("iconBtn")
-        btn_save.setStyleSheet(
-            "QPushButton{background:#1A2A1A;border:1px solid #9ECE6A;border-radius:4px;"
-            "color:#9ECE6A;font-size:10px;padding:2px 8px;}"
-            "QPushButton:hover{background:#1E351E;color:#B8E07A;}"
-        )
+        btn_save.setObjectName("successBtn")
         btn_save.setToolTip(tr("Сохранить ответ AI как новый файл"))
         hdr.addWidget(btn_save)
         fl.addLayout(hdr)
@@ -1777,7 +1908,7 @@ class MainWindow(QMainWindow):
         editor = QPlainTextEdit()
         editor.setReadOnly(True)
         editor.setFrameShape(QFrame.Shape.NoFrame)
-        editor.setStyleSheet("background:transparent;color:#CDD6F4;font-size:13px;border:none;")
+        editor.setStyleSheet(f"background:transparent;color:{get_color('tx0')};font-size:13px;border:none;")
         editor.setFont(QFont("Segoe UI,Arial", 12))
         editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         fl.addWidget(editor)
@@ -1797,8 +1928,12 @@ class MainWindow(QMainWindow):
         self._insert_bubble(f"❌ {text}", "error")
 
     def _insert_bubble(self, text: str, role: str):
-        colors = {"user":"#7AA2F7", "assistant":"#9ECE6A",
-                  "system":"#9D7CD8", "error":"#F7768E"}
+        colors = {
+            "user":      get_color("ac"),
+            "assistant": get_color("ok"),
+            "system":    get_color("tx2"),
+            "error":     get_color("err"),
+        }
         names  = {"user":tr("Вы"), "assistant":tr("Шерлок"),
                   "system":tr("Система"), "error":tr("Ошибка")}
         obj_ids = {"user":"userBubble", "assistant":"assistantBubble",
@@ -1811,14 +1946,14 @@ class MainWindow(QMainWindow):
 
         hdr = QHBoxLayout()
         rl = QLabel(names.get(role, role))
-        rl.setStyleSheet(f"color:{colors.get(role,'#CDD6F4')};font-size:11px;font-weight:bold;")
+        rl.setStyleSheet(f"color:{colors.get(role, get_color('tx0'))};font-size:11px;font-weight:bold;")
         hdr.addWidget(rl); hdr.addStretch()
         fl.addLayout(hdr)
 
         lbl = QLabel(text)
         lbl.setWordWrap(True)
         lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        lbl.setStyleSheet("font-size:13px;color:#CDD6F4;")
+        lbl.setStyleSheet(f"font-size:13px;color:{get_color('tx0')};")
         fl.addWidget(lbl)
 
         count = self._chat_layout.count()
@@ -2130,7 +2265,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
 
         info = QLabel(tr("Отметь файлы которые нужно открыть в редакторе:"))
-        info.setStyleSheet("color:#A9B1D6;font-size:12px;")
+        info.setObjectName("statusLabel")
         layout.addWidget(info)
 
         # Search filter
@@ -2142,7 +2277,9 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QListWidget, QListWidgetItem
         lst = QListWidget()
         lst.setStyleSheet(
-            "QListWidget{background:#131722;border:1px solid #1E2030;border-radius:6px;}QListWidget::item{padding:4px 10px;border-bottom:1px solid #111520;}QListWidget::item:selected{background:#2E3148;}"
+            f"QListWidget{{background:{get_color('bg2')};border:1px solid {get_color('bd2')};border-radius:6px;}}"
+            f"QListWidget::item{{padding:4px 10px;border-bottom:1px solid {get_color('bd2')};}}",
+            f"QListWidget::item:selected{{background:{get_color('sel')};}}",
         )
 
         root = Path(all_files[0]).parent if all_files else Path(".")
@@ -2249,7 +2386,7 @@ class MainWindow(QMainWindow):
             panel.setProperty("file_path", path)
             panel.setFont(QFont("JetBrains Mono,Consolas", 12))
             panel.setPlainText(content)
-            panel.setStyleSheet("background:#0D1117;color:#CDD6F4;border:none;")
+            panel.setStyleSheet(f"background:{get_color('bg0')};color:{get_color('tx0')};border:none;")
             panel.textChanged.connect(lambda: self._on_tab_modified(path, True))
 
         name = Path(path).name
@@ -2635,11 +2772,11 @@ class MainWindow(QMainWindow):
         ts = _dt.now().strftime("%H:%M:%S")
         sep = "─" * 52
         self._log_view.appendHtml(
-            f'<span style="color:#3B4261;font-family:monospace;font-size:11px;">'
+            f'<span style="color:{get_color("tx3")};font-family:monospace;font-size:11px;">'
             f'{sep}</span>'
         )
         self._log_view.appendHtml(
-            f'<span style="color:#9D7CD8;font-family:monospace;font-size:12px;font-weight:bold;">'
+            f'<span style="color:{get_color("ac")};font-family:monospace;font-size:12px;font-weight:bold;">'
             f'▶ {script_name}  &nbsp; <span style="color:#565f89;font-size:10px;">{ts}</span>'
             f'</span>'
         )
@@ -2736,6 +2873,17 @@ class MainWindow(QMainWindow):
                 if self._cmb_model.itemData(i) == s.default_model_id:
                     self._cmb_model.setCurrentIndex(i)
                     self._on_model_changed(i); break
+        # Apply theme, accent color and font size
+        try:
+            from ui.theme_manager import apply_theme, apply_font
+            apply_theme(
+                accent=getattr(s, "accent_color", "#7AA2F7"),
+                font_size=getattr(s, "ui_font_size", 11),
+                theme=getattr(s, "theme", "dark"),
+            )
+            apply_font(getattr(s, "ui_font_size", 11))
+        except Exception:
+            pass
         self.settings_changed.emit(s)
         self._add_system_message(tr("✅ Настройки сохранены"))
 
@@ -2791,9 +2939,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self._append_log(entry))
 
     def _append_log(self, entry: LogEntry):
-        colors = {LogLevel.INFO:"#CDD6F4", LogLevel.WARNING:"#E0AF68",
-                  LogLevel.ERROR:"#F7768E", LogLevel.DEBUG:"#565f89"}
-        c = colors.get(entry.level, "#CDD6F4")
+        colors = {LogLevel.INFO: get_color("tx1"), LogLevel.WARNING: get_color("warn"),
+                  LogLevel.ERROR: get_color("err"), LogLevel.DEBUG: get_color("tx2")}
+        c = colors.get(entry.level, get_color("tx1"))
         self._log_view.appendHtml(
             f'<span style="color:{c};font-family:monospace;font-size:11px;">'
             f'{entry.formatted}</span>')
@@ -2831,13 +2979,13 @@ class MainWindow(QMainWindow):
 
     def _on_script_line(self, line: str, stream: str):
         """Append one output line from a running script to the Logs tab."""
-        colors = {"OUT": "#CDD6F4", "ERR": "#F7768E", "SYS": "#BB9AF7"}
-        color  = colors.get(stream, "#CDD6F4")
+        colors = {"OUT": get_color("tx1"), "ERR": get_color("err"), "SYS": get_color("ac")}
+        color  = colors.get(stream, get_color("tx1"))
         safe   = (line.replace("&", "&amp;")
                       .replace("<", "&lt;")
                       .replace(">", "&gt;"))
         self._log_view.appendHtml(
-            f'<span style="color:{color};font-family:monospace;font-size:11px;">'
+            f'<span style="color:{color};font-family:monospace;font-size:12px;">'
             f'{safe}</span>'
         )
         sb = self._log_view.verticalScrollBar()
@@ -2850,14 +2998,14 @@ class MainWindow(QMainWindow):
         """Called when a manually-run script finishes."""
         self._stdin_input.setEnabled(False)
         icon  = "✅" if success else "❌"
-        color = "#9ECE6A" if success else "#F7768E"
+        color = get_color("ok") if success else get_color("err")
         safe  = summary.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         self._log_view.appendHtml(
             f'<span style="color:{color};font-family:monospace;font-size:12px;">'
             f'{icon} {safe}</span>'
         )
         self._log_view.appendHtml(
-            '<span style="color:#3B4261;font-family:monospace;font-size:11px;">'
+            f'<span style="color:{get_color("tx3")};font-family:monospace;font-size:11px;">'
             '─' * 52 + '</span>'
         )
         sb = self._log_view.verticalScrollBar()

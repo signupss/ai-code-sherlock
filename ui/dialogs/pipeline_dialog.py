@@ -14,6 +14,18 @@ except ImportError:
     def tr(s): return s
     def register_listener(cb): pass
     def retranslate_widget(w): pass
+
+try:
+    from ui.theme_manager import get_color, register_theme_refresh
+except ImportError:
+    def get_color(k): return {
+        "bg0": "#07080C", "bg1": "#0E1117", "bg2": "#131722", "bg3": "#1A1D2E",
+        "bd": "#2E3148",  "bd2": "#1E2030",
+        "tx0": "#CDD6F4", "tx1": "#A9B1D6", "tx2": "#565f89", "tx3": "#3B4261",
+        "sel": "#2E3148", "ok": "#9ECE6A", "err": "#F7768E", "warn": "#E0AF68",
+        "ac": "#7AA2F7",
+    }.get(k, "#CDD6F4")
+    def register_theme_refresh(cb): pass
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QTextEdit, QTabWidget, QWidget, QFrame,
@@ -86,13 +98,13 @@ class PipelineDialog(QDialog):
         layout.setSpacing(0)
 
         hdr = QFrame()
-        hdr.setStyleSheet("background:#0A0D14;border-bottom:1px solid #1E2030;")
+        hdr.setStyleSheet(f"background:{get_color('bg0')};border-bottom:1px solid {get_color('bd2')};")
         hdr.setFixedHeight(54)
         hl = QHBoxLayout(hdr); hl.setContentsMargins(20, 0, 20, 0)
         t1 = QLabel("⚡ Auto-Improve Pipeline")
-        t1.setStyleSheet("font-size:17px;font-weight:bold;color:#BB9AF7;")
+        t1.setStyleSheet(f"font-size:17px;font-weight:bold;color:{get_color('ac')};")
         t2 = QLabel(tr("  Настрой автономный цикл самоулучшения скриптов"))
-        t2.setStyleSheet("color:#565f89;font-size:12px;")
+        t2.setStyleSheet(f"color:{get_color('tx2')};font-size:12px;")
         hl.addWidget(t1); hl.addWidget(t2); hl.addStretch()
         layout.addWidget(hdr)
 
@@ -107,7 +119,7 @@ class PipelineDialog(QDialog):
         layout.addWidget(self._tabs, stretch=1)
 
         footer = QFrame()
-        footer.setStyleSheet("background:#0A0D14;border-top:1px solid #1E2030;")
+        footer.setStyleSheet(f"background:{get_color('bg0')};border-top:1px solid {get_color('bd2')};")
         footer.setFixedHeight(54)
         fl = QHBoxLayout(footer); fl.setContentsMargins(16, 0, 16, 0)
         self._btn_load = QPushButton(tr("📂 Загрузить")); self._btn_load.clicked.connect(self._load_from_file)
@@ -120,12 +132,7 @@ class PipelineDialog(QDialog):
         self._btn_once.clicked.connect(self._run_once)
         self._btn_start = QPushButton(tr("⚡ Запустить Pipeline"))
         self._btn_start.setObjectName("primaryBtn"); self._btn_start.setFixedWidth(185)
-        self._btn_start.setStyleSheet(
-            "QPushButton#primaryBtn{background:#BB9AF7;border:2px solid #9D7CD8;"
-            "color:#0E1117;font-weight:bold;font-size:13px;border-radius:7px;}"
-            "QPushButton#primaryBtn:hover{background:#CFA8FF;border-color:#BB9AF7;}"
-            "QPushButton#primaryBtn:pressed{background:#9D7CD8;}"
-        )
+        pass  # start button uses primaryBtn object name — styled by QSS
         self._btn_start.clicked.connect(self._on_start)
         fl.addWidget(self._btn_cancel); fl.addSpacing(8)
         fl.addWidget(self._btn_once); fl.addSpacing(8)
@@ -153,7 +160,7 @@ class PipelineDialog(QDialog):
         grp_goal = QGroupBox(tr("Цель оптимизации"))
         gl = QVBoxLayout(grp_goal)
         gl.addWidget(QLabel(tr("Опиши что нужно улучшить. AI использует это как критерий успеха."),
-                            styleSheet="color:#565f89;font-size:11px;"))
+                            objectName="statusLabel"))
         self._fld_goal = QTextEdit()
         self._fld_goal.setPlaceholderText(
             tr("Пример: Улучшить Precision > 70% и Signal Rate > 25%.\nУстранять все ошибки в логах.\nОптимизировать параметры CatBoost без переобучения."))
@@ -215,7 +222,7 @@ class PipelineDialog(QDialog):
         lbl = QLabel(tr("СКРИПТЫ В ПАЙПЛАЙНЕ")); lbl.setObjectName("sectionLabel")
         hdr_l.addWidget(lbl); hdr_l.addStretch()
         hint_run = QLabel(tr("● исполняются"))
-        hint_run.setStyleSheet("color:#9ECE6A;font-size:10px;")
+        hint_run.setObjectName("statusLabel")
         hdr_l.addWidget(hint_run)
         ll.addLayout(hdr_l)
 
@@ -224,13 +231,13 @@ class PipelineDialog(QDialog):
         self._script_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._script_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._script_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._script_table.setStyleSheet("""
-            QTableWidget{background:#131722;border:none;gridline-color:#1E2030;}
-            QTableWidget::item{padding:4px 8px;}
-            QTableWidget::item:selected{background:#2E3148;}
-            QHeaderView::section{background:#0A0D14;border:none;
-                border-bottom:1px solid #1E2030;padding:5px 8px;color:#565f89;font-size:11px;}
-        """)
+        self._script_table.setStyleSheet(
+            f"QTableWidget{{background:{get_color('bg2')};border:none;gridline-color:{get_color('bd2')};}}"
+            f"QTableWidget::item{{padding:4px 8px;}}"
+            f"QTableWidget::item:selected{{background:{get_color('sel')};}}"
+            f"QHeaderView::section{{background:{get_color('bg0')};border:none;"
+            f"border-bottom:1px solid {get_color('bd2')};padding:5px 8px;color:{get_color('tx2')};font-size:11px;}}"
+        )
         self._script_table.currentCellChanged.connect(self._on_script_selected)
         ll.addWidget(self._script_table)
 
@@ -239,10 +246,14 @@ class PipelineDialog(QDialog):
         bp.clicked.connect(lambda: self._add_script(ScriptRole.PRIMARY))
         bv = QPushButton(tr("+ Добавить валидатор"))
         bv.clicked.connect(lambda: self._add_script(ScriptRole.VALIDATOR))
+        bc = QPushButton(tr("+ Контекст AI"))
+        bc.setObjectName("iconBtn")
+        bc.setToolTip(tr("Сопутствующий скрипт — AI видит его при анализе, но не запускает и не патчит"))
+        bc.clicked.connect(lambda: self._add_script(ScriptRole.CONTEXT))
         bd = QPushButton(tr("✕ Удалить")); bd.setObjectName("dangerBtn"); bd.clicked.connect(self._remove_script)
         bu = QPushButton("↑"); bu.setFixedWidth(32); bu.clicked.connect(lambda: self._move_script(-1))
         bdn = QPushButton("↓"); bdn.setFixedWidth(32); bdn.clicked.connect(lambda: self._move_script(1))
-        br.addWidget(bp); br.addWidget(bv); br.addStretch()
+        br.addWidget(bp); br.addWidget(bv); br.addWidget(bc); br.addStretch()
         br.addWidget(bu); br.addWidget(bdn); br.addWidget(bd)
         ll.addLayout(br)
         top_split.addWidget(list_w)
@@ -255,7 +266,7 @@ class PipelineDialog(QDialog):
         lbl_p = QLabel(tr("ФАЙЛЫ ДЛЯ ПАТЧИНГА")); lbl_p.setObjectName("sectionLabel")
         hdr_r.addWidget(lbl_p); hdr_r.addStretch()
         hint_patch = QLabel(tr("◈ не запускаются"))
-        hint_patch.setStyleSheet("color:#BB9AF7;font-size:10px;")
+        hint_patch.setObjectName("statusLabel")
         hdr_r.addWidget(hint_patch)
         pl.addLayout(hdr_r)
 
@@ -270,13 +281,13 @@ class PipelineDialog(QDialog):
         self._patch_files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._patch_files_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._patch_files_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._patch_files_table.setStyleSheet("""
-            QTableWidget{background:#131722;border:none;gridline-color:#1E2030;}
-            QTableWidget::item{padding:3px 6px;}
-            QTableWidget::item:selected{background:#1E2A3A;}
-            QHeaderView::section{background:#0A0D14;border:none;
-                border-bottom:1px solid #1E2030;padding:4px 6px;color:#565f89;font-size:10px;}
-        """)
+        self._patch_files_table.setStyleSheet(
+            f"QTableWidget{{background:{get_color('bg2')};border:none;gridline-color:{get_color('bd2')};}}"
+            f"QTableWidget::item{{padding:3px 6px;}}"
+            f"QTableWidget::item:selected{{background:{get_color('sel')};}}"
+            f"QHeaderView::section{{background:{get_color('bg0')};border:none;"
+            f"border-bottom:1px solid {get_color('bd2')};padding:4px 6px;color:{get_color('tx2')};font-size:10px;}}"
+        )
         pl.addWidget(self._patch_files_table)
 
         # Quick add bar
@@ -315,13 +326,13 @@ class PipelineDialog(QDialog):
         self._chk_patch_scope_active.setToolTip(
             tr("AI патчит только выбранный основной скрипт + файлы из этого списка.\nСнять галочку = патчить также все файлы открытые в редакторе.")
         )
-        self._chk_patch_scope_active.setStyleSheet("font-size:11px;color:#A9B1D6;")
+        self._chk_patch_scope_active.setObjectName("statusLabel")
 
         self._chk_patch_scope_open = QCheckBox(tr("+ Все открытые в редакторе"))
         self._chk_patch_scope_open.setToolTip(
             tr("Дополнительно включить в патчинг все файлы,\nкоторые открыты во вкладках главного редактора.")
         )
-        self._chk_patch_scope_open.setStyleSheet("font-size:11px;color:#A9B1D6;")
+        self._chk_patch_scope_open.setObjectName("statusLabel")
         scope_row.addWidget(self._chk_patch_scope_active)
         scope_row.addWidget(self._chk_patch_scope_open)
         scope_row.addStretch()
@@ -329,7 +340,7 @@ class PipelineDialog(QDialog):
 
         # Summary label
         self._lbl_patch_files_count = QLabel(tr("0 файлов для патчинга"))
-        self._lbl_patch_files_count.setStyleSheet("color:#565f89;font-size:10px;")
+        self._lbl_patch_files_count.setObjectName("statusLabel")
         pl.addWidget(self._lbl_patch_files_count)
 
         top_split.addWidget(patch_w)
@@ -344,7 +355,7 @@ class PipelineDialog(QDialog):
         dhl = QHBoxLayout(detail_hdr); dhl.setContentsMargins(12, 0, 8, 0)
         lbl_d = QLabel(tr("ДЕТАЛИ СКРИПТА")); lbl_d.setObjectName("sectionLabel")
         self._lbl_detail_script = QLabel(tr("— нет выбранного —"))
-        self._lbl_detail_script.setStyleSheet("color:#7AA2F7;font-size:11px;")
+        self._lbl_detail_script.setObjectName("accentLabel")
         dhl.addWidget(lbl_d); dhl.addSpacing(12); dhl.addWidget(self._lbl_detail_script)
         dhl.addStretch()
         root.addWidget(detail_hdr)
@@ -379,7 +390,7 @@ class PipelineDialog(QDialog):
         self._spn_script_timeout.setValue(3600); self._spn_script_timeout.setSuffix(tr(" сек"))
         self._spn_script_timeout.setToolTip(tr("3600=1ч  21600=6ч  86400=24ч  356400=99ч"))
         self._lbl_timeout_human = QLabel(tr("= 1 ч 0 мин"))
-        self._lbl_timeout_human.setStyleSheet("color:#565f89;font-size:11px;")
+        self._lbl_timeout_human.setObjectName("statusLabel")
         self._spn_script_timeout.valueChanged.connect(self._update_timeout_label)
         timeout_row.addWidget(self._spn_script_timeout); timeout_row.addWidget(self._lbl_timeout_human); timeout_row.addStretch()
         for lbl3, secs in [("1ч", 3600), ("6ч", 21600), ("12ч", 43200), ("24ч", 86400), ("99ч", 356400)]:
@@ -405,7 +416,7 @@ class PipelineDialog(QDialog):
         hint = QLabel(
             tr("Каждая строка = один ответ, отправляемый в stdin по порядку.\nПустая строка = Enter. Примеры: 'y', 'yes', 'all', '1', '0'")
         )
-        hint.setStyleSheet("color:#565f89;font-size:11px;"); hint.setWordWrap(True)
+        hint.setObjectName("statusLabel"); hint.setWordWrap(True)
         ail.addWidget(hint)
         self._fld_auto_input = QPlainTextEdit()
         self._fld_auto_input.setPlaceholderText(tr("y\n\nall\n\n(пустая строка = Enter)"))
@@ -439,12 +450,12 @@ class PipelineDialog(QDialog):
             from pathlib import Path as _Path
             p = _Path(entry["path"])
             name_item = QTableWidgetItem(f"◈ {p.name}")
-            name_item.setForeground(QColor("#BB9AF7"))
+            name_item.setForeground(QColor(get_color('ac')))
             name_item.setData(Qt.ItemDataRole.UserRole, entry["path"])
             rel_item  = QTableWidgetItem(entry.get("rel", str(p)))
-            rel_item.setForeground(QColor("#565f89"))
+            rel_item.setForeground(QColor(get_color('tx2')))
             grp_item  = QTableWidgetItem(entry.get("group", ""))
-            grp_item.setForeground(QColor("#E0AF68"))
+            grp_item.setForeground(QColor(get_color('warn')))
             self._patch_files_table.setItem(row, 0, name_item)
             self._patch_files_table.setItem(row, 1, rel_item)
             self._patch_files_table.setItem(row, 2, grp_item)
@@ -526,7 +537,7 @@ class PipelineDialog(QDialog):
         info = QLabel(
             tr("Файлы которые скрипт генерирует — будут прикреплены к контексту AI.\nПоддерживаются: .csv .json .xlsx .txt .log .pkl .npy .npz .parquet и любой текст.\nТакже можно мониторить папки и захватывать снимки окон программы.")
         )
-        info.setStyleSheet("color:#565f89;font-size:12px;"); info.setWordWrap(True)
+        info.setObjectName("statusLabel"); info.setWordWrap(True)
         layout.addWidget(info)
 
         # ── Specific output files per script ──────────────────────────────────
@@ -536,7 +547,7 @@ class PipelineDialog(QDialog):
         self._cmb_script_sel.currentIndexChanged.connect(self._on_output_script_changed)
         gl.addWidget(self._cmb_script_sel)
         self._output_list = QListWidget()
-        self._output_list.setStyleSheet("background:#131722;border:1px solid #1E2030;border-radius:6px;")
+        self._output_list.setStyleSheet(f"background:{get_color('bg2')};border:1px solid {get_color('bd2')};border-radius:6px;")
         self._output_list.setMinimumHeight(120)
         self._output_list.setMaximumHeight(130)
         gl.addWidget(self._output_list)
@@ -547,7 +558,7 @@ class PipelineDialog(QDialog):
         ob.addStretch(); ob.addWidget(bd)
         gl.addLayout(ob)
         gl.addWidget(QLabel(tr("Примеры: *.csv   results/*.json   output_*   models/*.pkl"),
-                            styleSheet="color:#3B4261;font-size:10px;"))
+                            objectName="statusLabel"))
         layout.addWidget(grp_files)
 
         # ── Folder Monitoring ─────────────────────────────────────────────────
@@ -568,7 +579,9 @@ class PipelineDialog(QDialog):
 
         self._folder_list = QListWidget()
         self._folder_list.setStyleSheet(
-            "QListWidget{background:#131722;border:1px solid #1E2030;border-radius:6px;}QListWidget::item{padding:5px 10px;}QListWidget::item:selected{background:#2E3148;}"
+            f"QListWidget{{background:{get_color('bg2')};border:1px solid {get_color('bd2')};border-radius:6px;}}"
+            f"QListWidget::item{{padding:5px 10px;}}"
+            f"QListWidget::item:selected{{background:{get_color('sel')};}}"
         )
         self._folder_list.setMaximumHeight(110)
         dl.addWidget(self._folder_list)
@@ -684,7 +697,8 @@ class PipelineDialog(QDialog):
             tr("⚠  Для захвата окон на Windows используется win32gui/mss.\n   На Linux — scrot/gnome-screenshot (должен быть установлен).\n   Для работы multimodal AI нужна модель с поддержкой vision.")
         )
         ss_hint.setStyleSheet(
-            "color:#565f89;font-size:10px;background:#0A0D14;border:1px solid #1E2030;border-radius:4px;padding:6px;"
+            f"color:{get_color('tx2')};font-size:10px;background:{get_color('bg0')};"
+            f"border:1px solid {get_color('bd2')};border-radius:4px;padding:6px;"
         )
         ss_hint.setWordWrap(True)
         sl.addWidget(ss_hint)
@@ -751,7 +765,7 @@ class PipelineDialog(QDialog):
         layout = QVBoxLayout(w); layout.setContentsMargins(20,16,20,16); layout.setSpacing(14)
         layout.addWidget(QLabel(
             tr("Стратегия определяет как AI подходит к улучшению кода — консервативно или агрессивно, исследуя или эксплуатируя успех."),
-            styleSheet="color:#A9B1D6;font-size:12px;"))
+            objectName="statusLabel"))
 
         grp_s = QGroupBox(tr("Стратегия AI"))
         sl = QFormLayout(grp_s); sl.setSpacing(10)
@@ -766,7 +780,8 @@ class PipelineDialog(QDialog):
 
         self._lbl_strategy_desc = QLabel()
         self._lbl_strategy_desc.setStyleSheet(
-            "color:#A9B1D6;font-size:12px;background:#131722;border:1px solid #1E2030;border-radius:6px;padding:10px;")
+            f"color:{get_color('tx1')};font-size:12px;background:{get_color('bg2')};"
+            f"border:1px solid {get_color('bd2')};border-radius:6px;padding:10px;")
         self._lbl_strategy_desc.setWordWrap(True); self._lbl_strategy_desc.setMinimumHeight(70)
         sl.addRow("", self._lbl_strategy_desc)
 
@@ -805,7 +820,7 @@ class PipelineDialog(QDialog):
         gml = QVBoxLayout(grp_met)
         gml.addWidget(QLabel(
             tr("Первая группа захвата = числовое значение метрики.\nAI будет видеть тренд метрик и принимать решения на основе них."),
-            styleSheet="color:#565f89;font-size:11px;"))
+            objectName="statusLabel"))
         self._fld_metrics = QPlainTextEdit()
         self._fld_metrics.setPlaceholderText(
             r"precision[:\s=]+(\d+\.?\d*)" + "\n" +
@@ -832,7 +847,7 @@ class PipelineDialog(QDialog):
         top_hint = QLabel(
             tr("Консенсус AI — запрашивает несколько моделей одновременно и выбирает лучший ответ.\nПовышает качество патчей за счёт перекрёстной проверки.")
         )
-        top_hint.setStyleSheet("color:#A9B1D6;font-size:12px;"); top_hint.setWordWrap(True)
+        top_hint.setObjectName("statusLabel"); top_hint.setWordWrap(True)
         layout.addWidget(top_hint)
 
         grp_en = QGroupBox(tr("Включить консенсус"))
@@ -864,17 +879,19 @@ class PipelineDialog(QDialog):
         grp_models = QGroupBox(tr("Модели для консенсуса"))
         ml = QVBoxLayout(grp_models)
         ml.addWidget(QLabel(tr("Выбери модели которые будут участвовать в консенсусе:"),
-                            styleSheet="color:#565f89;font-size:11px;"))
+                            objectName="statusLabel"))
 
         self._consensus_model_list = QListWidget()
         self._consensus_model_list.setMaximumHeight(160)
         self._consensus_model_list.setStyleSheet(
-            "QListWidget{background:#131722;border:1px solid #1E2030;border-radius:8px;}QListWidget::item{padding:7px 12px;border-bottom:1px solid #1E2030;}QListWidget::item:selected{background:#2E3148;}"
+            f"QListWidget{{background:{get_color('bg2')};border:1px solid {get_color('bd2')};border-radius:8px;}}"
+            f"QListWidget::item{{padding:7px 12px;border-bottom:1px solid {get_color('bd2')};}}"
+            f"QListWidget::item:selected{{background:{get_color('sel')};}}"
         )
         ml.addWidget(self._consensus_model_list)
 
         ml.addWidget(QLabel(tr("Нажми ↑ чтобы обновить список из настроек моделей."),
-                            styleSheet="color:#3B4261;font-size:10px;"))
+                            objectName="statusLabel"))
         btn_refresh_models = QPushButton(tr("↑ Обновить список моделей"))
         btn_refresh_models.clicked.connect(self._refresh_consensus_models)
         ml.addWidget(btn_refresh_models)
@@ -889,7 +906,7 @@ class PipelineDialog(QDialog):
         self._judge_hint = QLabel(
             tr("Судья получает все ответы других моделей и выбирает лучший.")
         )
-        self._judge_hint.setStyleSheet("color:#565f89;font-size:11px;")
+        self._judge_hint.setObjectName("statusLabel")
         jl.addRow("", self._judge_hint)
         layout.addWidget(grp_judge)
 
@@ -909,7 +926,7 @@ class PipelineDialog(QDialog):
         hint = QLabel(
             tr("Создавай собственные стратегии AI с полностью кастомными инструкциями.\nАктивная кастомная стратегия заменяет стандартную стратегию из вкладки 'Стратегия AI'.")
         )
-        hint.setStyleSheet("color:#A9B1D6;font-size:12px;"); hint.setWordWrap(True)
+        hint.setObjectName("statusLabel"); hint.setWordWrap(True)
         layout.addWidget(hint)
 
         grp = QGroupBox(tr("Активная кастомная стратегия"))
@@ -929,7 +946,8 @@ class PipelineDialog(QDialog):
 
         self._lbl_custom_desc = QLabel("")
         self._lbl_custom_desc.setStyleSheet(
-            "color:#A9B1D6;font-size:11px;background:#131722;border:1px solid #1E2030;border-radius:6px;padding:8px;"
+            f"color:{get_color('tx1')};font-size:11px;background:{get_color('bg2')};"
+            f"border:1px solid {get_color('bd2')};border-radius:6px;padding:8px;"
         )
         self._lbl_custom_desc.setWordWrap(True)
         self._lbl_custom_desc.setMinimumHeight(50)
@@ -943,6 +961,61 @@ class PipelineDialog(QDialog):
     def _build_advanced_tab(self):
         w = QWidget()
         layout = QVBoxLayout(w); layout.setContentsMargins(20,16,20,16); layout.setSpacing(12)
+
+        # ── AI Request Settings ───────────────────────────────────────────────
+        grp_ai = QGroupBox(tr("Запросы к AI"))
+        al_ai = QFormLayout(grp_ai); al_ai.setSpacing(10)
+
+        al_ai.addRow(QLabel(
+            tr("Настройки применяются к каждому вызову AI в пайплайне."),
+            styleSheet="color:#565f89;font-size:11px;"
+        ))
+
+        # Timeout row with human label
+        timeout_row = QHBoxLayout()
+        self._spn_ai_timeout = QSpinBox()
+        self._spn_ai_timeout.setRange(30, 7200)
+        self._spn_ai_timeout.setValue(600)
+        self._spn_ai_timeout.setSuffix(tr(" сек"))
+        self._spn_ai_timeout.setToolTip(
+            tr("Сколько секунд ждать ответа AI.\n"
+               "300=5мин  600=10мин  1200=20мин  3600=1ч\n"
+               "Увеличь если промпт большой и модель медленная.")
+        )
+        self._lbl_ai_timeout_human = QLabel(tr("= 10 мин"))
+        self._lbl_ai_timeout_human.setObjectName("statusLabel")
+        self._spn_ai_timeout.valueChanged.connect(self._update_ai_timeout_label)
+        timeout_row.addWidget(self._spn_ai_timeout)
+        timeout_row.addWidget(self._lbl_ai_timeout_human)
+        timeout_row.addStretch()
+        for lbl_t, secs_t in [("5м", 300), ("10м", 600), ("20м", 1200), ("30м", 1800), ("1ч", 3600)]:
+            bt = QPushButton(lbl_t); bt.setFixedWidth(38)
+            bt.clicked.connect(lambda _, s=secs_t: self._spn_ai_timeout.setValue(s))
+            timeout_row.addWidget(bt)
+        al_ai.addRow(tr("Таймаут AI:"), timeout_row)
+
+        # Retry count
+        retry_row = QHBoxLayout()
+        self._spn_ai_retry = QSpinBox()
+        self._spn_ai_retry.setRange(0, 10)
+        self._spn_ai_retry.setValue(3)
+        self._spn_ai_retry.setToolTip(
+            tr("Сколько раз повторять запрос если AI не ответил или вернул пустой ответ.\n"
+               "0 = нет повторов (провал сразу)\n"
+               "3 = до 4 попыток суммарно (1 + 3 повтора)\n"
+               "Между попытками: пауза 10с, 20с, 30с (нарастающая).")
+        )
+        self._lbl_ai_retry_total = QLabel(tr("= до 4 попыток суммарно"))
+        self._lbl_ai_retry_total.setObjectName("statusLabel")
+        self._spn_ai_retry.valueChanged.connect(self._update_ai_retry_label)
+        retry_row.addWidget(self._spn_ai_retry)
+        retry_row.addWidget(self._lbl_ai_retry_total)
+        retry_row.addStretch()
+        al_ai.addRow(tr("Повторов при сбое AI:"), retry_row)
+
+        layout.addWidget(grp_ai)
+
+        # ── AI Behaviour ──────────────────────────────────────────────────────
         grp = QGroupBox(tr("Поведение AI"))
         al = QFormLayout(grp); al.setSpacing(10)
         self._chk_prev_patches = QCheckBox(tr("Включать историю патчей (AI не повторяет неудачные)"))
@@ -952,6 +1025,7 @@ class PipelineDialog(QDialog):
         self._chk_error_map.setChecked(True)
         al.addRow("", self._chk_error_map)
         layout.addWidget(grp)
+
         grp2 = QGroupBox(tr("Безопасность"))
         sl2 = QFormLayout(grp2); sl2.setSpacing(10)
         self._chk_syntax_check = QCheckBox(tr("Проверять синтаксис Python перед применением патча"))
@@ -963,6 +1037,22 @@ class PipelineDialog(QDialog):
         layout.addWidget(grp2)
         layout.addStretch()
         return w
+
+    def _update_ai_timeout_label(self, secs: int):
+        h, r = divmod(secs, 3600); m, s = divmod(r, 60)
+        if h:
+            self._lbl_ai_timeout_human.setText(f"= {h} {tr('ч')} {m} {tr('мин')}")
+        elif m:
+            self._lbl_ai_timeout_human.setText(f"= {m} {tr('мин')} {s} {tr('сек')}")
+        else:
+            self._lbl_ai_timeout_human.setText(f"= {s} {tr('сек')}")
+
+    def _update_ai_retry_label(self, retries: int):
+        total = retries + 1
+        if retries == 0:
+            self._lbl_ai_retry_total.setText(tr("= нет повторов"))
+        else:
+            self._lbl_ai_retry_total.setText(f"= {tr('до')} {total} {tr('попыток суммарно')}")
 
     # ══════════════════════════════════════════════════════
     #  Config load / collect
@@ -992,6 +1082,13 @@ class PipelineDialog(QDialog):
         self._spn_tokens.setValue(cfg.max_context_tokens)
         self._spn_log_chars.setValue(cfg.log_max_chars)
         self._spn_file_chars.setValue(cfg.output_max_chars)
+        # AI request settings
+        if hasattr(self, "_spn_ai_timeout"):
+            self._spn_ai_timeout.setValue(getattr(cfg, "ai_timeout_seconds", 600))
+            self._update_ai_timeout_label(self._spn_ai_timeout.value())
+        if hasattr(self, "_spn_ai_retry"):
+            self._spn_ai_retry.setValue(getattr(cfg, "ai_retry_count", 3))
+            self._update_ai_retry_label(self._spn_ai_retry.value())
         self._fld_metrics.setPlainText("\n".join(cfg.metric_patterns))
         self._scripts = list(cfg.scripts)
         self._refresh_script_table()
@@ -1020,6 +1117,11 @@ class PipelineDialog(QDialog):
         cfg.max_context_tokens = self._spn_tokens.value()
         cfg.log_max_chars = self._spn_log_chars.value()
         cfg.output_max_chars = self._spn_file_chars.value()
+        # AI request settings
+        if hasattr(self, "_spn_ai_timeout"):
+            cfg.ai_timeout_seconds = self._spn_ai_timeout.value()
+        if hasattr(self, "_spn_ai_retry"):
+            cfg.ai_retry_count = self._spn_ai_retry.value()
         raw = self._fld_metrics.toPlainText().strip()
         cfg.metric_patterns = [p.strip() for p in raw.splitlines() if p.strip()]
         cfg.scripts = list(self._scripts)
@@ -1067,9 +1169,11 @@ class PipelineDialog(QDialog):
         self._script_table.setRowCount(len(self._scripts))
         for row, sc in enumerate(self._scripts):
             if sc.role == ScriptRole.PRIMARY:
-                rt, rc = tr("🎯 Основной"), "#9ECE6A"
+                rt, rc = tr('🎯 Основной'), get_color('ok')
+            elif sc.role == ScriptRole.VALIDATOR:
+                rt, rc = tr('✓ Валидатор'), get_color('ac')
             else:
-                rt, rc = tr("✓ Валидатор"), "#7AA2F7"
+                rt, rc = tr('📖 Контекст'), get_color('warn')
             ri = QTableWidgetItem(rt); ri.setForeground(QColor(rc))
             self._script_table.setItem(row, 0, ri)
             self._script_table.setItem(row, 1, QTableWidgetItem(sc.name))
@@ -1088,8 +1192,11 @@ class PipelineDialog(QDialog):
         self._fld_script_path.setText(sc.script_path)
         self._fld_args.setText(" ".join(sc.args))
         self._fld_workdir.setText(sc.working_dir)
+        is_context = sc.role == ScriptRole.CONTEXT
         self._spn_script_timeout.setValue(sc.timeout_seconds)
-        self._chk_patchable.setChecked(sc.allow_patching)
+        self._spn_script_timeout.setEnabled(not is_context)
+        self._chk_patchable.setChecked(sc.allow_patching and not is_context)
+        self._chk_patchable.setEnabled(not is_context)
         self._fld_env_vars.setText(", ".join(f"{k}={v}" for k, v in sc.env_vars.items()))
         self._chk_auto_input.setChecked(sc.auto_input.enabled)
         self._fld_auto_input.setPlainText("\n".join(sc.auto_input.sequences))
@@ -1097,7 +1204,18 @@ class PipelineDialog(QDialog):
         # Update detail header
         from pathlib import Path as _Path
         name = _Path(sc.script_path).name if sc.script_path else tr("— нет выбранного —")
-        role_badge = "🎯 " if sc.role == ScriptRole.PRIMARY else "✓ "
+        is_context = sc.role == ScriptRole.CONTEXT
+        self._spn_script_timeout.setValue(sc.timeout_seconds)
+        self._spn_script_timeout.setEnabled(not is_context)
+        self._chk_patchable.setChecked(sc.allow_patching and not is_context)
+        self._chk_patchable.setEnabled(not is_context)
+        ...
+        if sc.role == ScriptRole.PRIMARY:
+            role_badge = "🎯 "
+        elif sc.role == ScriptRole.VALIDATOR:
+            role_badge = "✓ "
+        else:
+            role_badge = "📖 "
         self._lbl_detail_script.setText(f"{role_badge}{name}")
 
     def _save_script_detail(self):
@@ -1169,7 +1287,7 @@ class PipelineDialog(QDialog):
         for p in sc.output_patterns:
             item = QListWidgetItem(f"🔍 {p}  [{tr('паттерн')}]")
             item.setData(Qt.ItemDataRole.UserRole, ("pattern", p))
-            item.setForeground(QColor("#E0AF68")); self._output_list.addItem(item)
+            item.setForeground(QColor(get_color('warn'))); self._output_list.addItem(item)
 
     def _add_output_file(self):
         idx = self._cmb_script_sel.currentIndex()

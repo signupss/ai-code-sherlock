@@ -16,6 +16,14 @@ from PyQt6.QtWidgets import (
 from services.engine import CODE_EXTENSIONS, IGNORED_DIRS
 
 try:
+    from ui.theme_manager import get_color, register_theme_refresh
+except ImportError:
+    def get_color(k): return {"bg0":"#07080C","bg1":"#0E1117","bg2":"#131722",
+        "bd":"#2E3148","bd2":"#1E2030","tx0":"#CDD6F4","tx1":"#A9B1D6",
+        "tx2":"#565f89","tx3":"#3B4261","ac":"#7AA2F7"}.get(k,"#CDD6F4")
+    def register_theme_refresh(cb): pass
+
+try:
     from ui.i18n import tr, register_listener
 except ImportError:
     def tr(s): return s
@@ -87,59 +95,83 @@ class FileTreeWidget(QWidget):
 
         layout.addWidget(hdr)
 
-        # Search filter
+        # Search filter — style applied by _apply_theme_styles()
         self._search = QLineEdit()
         self._search.setPlaceholderText(tr("Поиск файлов..."))
-        self._search.setStyleSheet(
-            "border: none; border-bottom: 1px solid #1E2030; background: #0A0D14; padding: 4px 10px; font-size: 12px;"
-        )
         self._search.textChanged.connect(self._on_filter_changed)
         layout.addWidget(self._search)
 
         # Root path label
         self._root_label = QLabel(tr("Папка не открыта"))
-        self._root_label.setStyleSheet(
-            "color: #565f89; font-size: 10px; padding: 3px 10px; background: #0A0D14; border-bottom: 1px solid #1E2030;"
-        )
         self._root_label.setWordWrap(False)
         self._root_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         layout.addWidget(self._root_label)
 
-        # Tree
+        # Tree — no inline stylesheet; global QSS handles it
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
         self._tree.setIndentation(16)
         self._tree.setAnimated(True)
         self._tree.setUniformRowHeights(True)
         self._tree.setFont(QFont("JetBrains Mono,Cascadia Code,Consolas", 11))
-        self._tree.setStyleSheet("""
-            QTreeWidget {
-                background: #0E1117;
-                border: none;
-                color: #A9B1D6;
-                outline: none;
-            }
-            QTreeWidget::item {
-                padding: 3px 4px;
-                border-radius: 3px;
-            }
-            QTreeWidget::item:selected {
-                background: #2E3148;
-                color: #CDD6F4;
-            }
-            QTreeWidget::item:hover {
-                background: #1E2030;
-            }
-            QTreeWidget::branch {
-                background: transparent;
-            }
-        """)
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self._tree.itemExpanded.connect(self._on_item_expanded)
         self._tree.itemCollapsed.connect(self._on_item_collapsed)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self._tree, stretch=1)
+
+        # Apply theme-aware colors and register for live refresh
+        self._apply_theme_styles()
+        register_theme_refresh(self._apply_theme_styles)
+
+    def _apply_theme_styles(self):
+        """Rebuild all inline styles using the current palette."""
+        bg0  = get_color("bg0")
+        bg1  = get_color("bg1")
+        bg2  = get_color("bg2")
+        bg3  = get_color("bg3")
+        bd2  = get_color("bd2")
+        tx0  = get_color("tx0")
+        tx1  = get_color("tx1")
+        tx2  = get_color("tx2")
+        tx3  = get_color("tx3")
+        ac   = get_color("ac")
+        sel  = get_color("sel")
+
+        self._search.setStyleSheet(
+            f"border: none; border-bottom: 1px solid {bd2};"
+            f" background: {bg0}; color: {tx0}; padding: 4px 10px; font-size: 12px;"
+        )
+        self._root_label.setStyleSheet(
+            f"color: {tx2}; font-size: 10px; padding: 3px 10px;"
+            f" background: {bg0}; border-bottom: 1px solid {bd2};"
+        )
+        self._tree.setStyleSheet(f"""
+            QTreeWidget {{
+                background: {bg1};
+                border: none;
+                color: {tx0};
+                outline: none;
+            }}
+            QTreeWidget::item {{
+                padding: 3px 4px;
+                border-radius: 3px;
+            }}
+            QTreeWidget::item:selected {{
+                background: {sel};
+                color: {ac};
+            }}
+            QTreeWidget::item:hover {{
+                background: {bg3};
+            }}
+            QTreeWidget::branch {{
+                background: transparent;
+            }}
+        """)
+        # Re-populate tree so item foreground colors use new palette
+        if hasattr(self, "_root_path") and self._root_path:
+            self._refresh()
 
     # ── Public API ─────────────────────────────────────────
 
@@ -191,7 +223,7 @@ class FileTreeWidget(QWidget):
                 item.setText(0, f"{_DIR_ICON} {name}")
                 item.setData(0, Qt.ItemDataRole.UserRole, entry.path)
                 item.setData(0, Qt.ItemDataRole.UserRole + 1, "dir")
-                item.setForeground(0, QColor("#7AA2F7"))
+                item.setForeground(0, QColor(get_color("ac")))
                 # Add a placeholder child so the expand arrow shows
                 placeholder = QTreeWidgetItem(item)
                 placeholder.setText(0, "...")
@@ -210,9 +242,9 @@ class FileTreeWidget(QWidget):
 
                 # Color by type
                 if ext in CODE_EXTENSIONS:
-                    item.setForeground(0, QColor("#CDD6F4"))
+                    item.setForeground(0, QColor(get_color("tx0")))
                 else:
-                    item.setForeground(0, QColor("#565f89"))
+                    item.setForeground(0, QColor(get_color("tx2")))
 
     def _on_item_expanded(self, item: QTreeWidgetItem):
         """Lazy-load directory contents on expand."""
@@ -259,15 +291,17 @@ class FileTreeWidget(QWidget):
         path = item.data(0, Qt.ItemDataRole.UserRole)
 
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background: #1E2030; border: 1px solid #2E3148;
+        bg2 = get_color("bg2"); bg3 = get_color("bg3")
+        bd  = get_color("bd");  tx0 = get_color("tx0"); ac = get_color("ac")
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background: {bg2}; border: 1px solid {bd};
                 border-radius: 6px; padding: 4px;
-                color: #CDD6F4; font-size: 12px;
-            }
-            QMenu::item { padding: 6px 20px; border-radius: 4px; }
-            QMenu::item:selected { background: #2E3148; }
-            QMenu::separator { background: #2E3148; height: 1px; margin: 4px 0; }
+                color: {tx0}; font-size: 12px;
+            }}
+            QMenu::item {{ padding: 6px 20px; border-radius: 4px; }}
+            QMenu::item:selected {{ background: {bg3}; color: {ac}; }}
+            QMenu::separator {{ background: {bd}; height: 1px; margin: 4px 0; }}
         """)
 
         if kind == "file" and path:

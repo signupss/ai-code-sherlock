@@ -23,6 +23,17 @@ try:
 except ImportError:
     def tr(s): return s
 
+try:
+    from ui.theme_manager import get_color, register_theme_refresh
+except ImportError:
+    def get_color(k): return {
+        "bg0": "#07080C", "bg1": "#0E1117", "bg2": "#131722", "bd2": "#1E2030",
+        "tx0": "#CDD6F4", "tx1": "#A9B1D6", "tx2": "#565f89",
+        "ok": "#9ECE6A", "warn": "#E0AF68", "err": "#F7768E",
+        "ac": "#7AA2F7",
+    }.get(k, "#CDD6F4")
+    def register_theme_refresh(cb): pass
+
 
 class PipelineWorkerSignals(QObject):
     event_received = pyqtSignal(object)   # PipelineEvent
@@ -73,22 +84,22 @@ class IterationCard(QFrame):
 
         self._lbl_num = QLabel(f"#{self._iteration}")
         self._lbl_num.setFixedWidth(30)
-        self._lbl_num.setStyleSheet("color:#7AA2F7;font-weight:bold;font-size:13px;")
+        self._lbl_num.setObjectName("accentLabel")
 
         self._lbl_status = QLabel(tr("● запуск..."))
-        self._lbl_status.setStyleSheet("color:#E0AF68;font-size:12px;")
+        self._lbl_status.setObjectName("statusLabel")
         self._lbl_status.setFixedWidth(140)
 
         self._lbl_patches = QLabel("")
-        self._lbl_patches.setStyleSheet("color:#9ECE6A;font-size:11px;")
+        self._lbl_patches.setObjectName("statusLabel")
         self._lbl_patches.setFixedWidth(120)
 
         self._lbl_time = QLabel("")
-        self._lbl_time.setStyleSheet("color:#565f89;font-size:11px;")
+        self._lbl_time.setObjectName("statusLabel")
         self._lbl_time.setFixedWidth(70)
 
         self._lbl_detail = QLabel("")
-        self._lbl_detail.setStyleSheet("color:#565f89;font-size:11px;")
+        self._lbl_detail.setObjectName("statusLabel")
         self._lbl_detail.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._lbl_detail.setWordWrap(False)
 
@@ -98,17 +109,18 @@ class IterationCard(QFrame):
         layout.addWidget(self._lbl_time)
         layout.addWidget(self._lbl_detail)
 
-    def update_status(self, status: str, color: str = "#E0AF68"):
+    def update_status(self, status: str, color: str = ""):
         self._lbl_status.setText(status)
-        self._lbl_status.setStyleSheet(f"color:{color};font-size:12px;")
+        c = color or get_color("warn")
+        self._lbl_status.setStyleSheet(f"color:{c};font-size:12px;")
 
     def update_patches(self, applied: int, failed: int, rolled_back: bool):
         if rolled_back:
-            text = tr("↩ откат")
-            color = "#F7768E"
+            text  = tr("↩ откат")
+            color = get_color("err")
         else:
-            text = f"+{applied} патчей"
-            color = "#9ECE6A" if applied > 0 else "#565f89"
+            text  = f"+{applied} патчей"
+            color = get_color("ok") if applied > 0 else get_color("tx2")
         if failed:
             text += f" ({failed} неудач)"
         self._lbl_patches.setText(text)
@@ -158,21 +170,21 @@ class AutoRunPanel(QWidget):
         sl = QHBoxLayout(status_bar); sl.setContentsMargins(12, 0, 12, 0)
 
         self._lbl_pipeline_name = QLabel(tr("Нет активного пайплайна"))
-        self._lbl_pipeline_name.setStyleSheet("color:#CDD6F4;font-size:13px;font-weight:bold;")
+        self._lbl_pipeline_name.setObjectName("titleLabel")
         sl.addWidget(self._lbl_pipeline_name)
 
         self._lbl_iteration = QLabel("")
-        self._lbl_iteration.setStyleSheet("color:#E0AF68;font-size:12px;")
+        self._lbl_iteration.setObjectName("accentLabel")
         sl.addWidget(self._lbl_iteration)
 
         sl.addStretch()
 
         self._lbl_elapsed = QLabel("00:00")
-        self._lbl_elapsed.setStyleSheet("color:#565f89;font-size:12px;font-family:monospace;")
+        self._lbl_elapsed.setObjectName("statusLabel")
         sl.addWidget(self._lbl_elapsed)
 
         self._lbl_status = QLabel(tr("○ Ожидание"))
-        self._lbl_status.setStyleSheet("color:#565f89;font-size:12px;")
+        self._lbl_status.setObjectName("statusLabel")
         sl.addWidget(self._lbl_status)
 
         self._btn_stop = QPushButton(tr("■ Остановить"))
@@ -188,9 +200,6 @@ class AutoRunPanel(QWidget):
         self._progress = QProgressBar()
         self._progress.setFixedHeight(3)
         self._progress.setTextVisible(False)
-        self._progress.setStyleSheet(
-            "QProgressBar { background:#1E2030; border:none; }QProgressBar::chunk { background:#3D59A1; }"
-        )
         self._progress.setValue(0)
         layout.addWidget(self._progress)
 
@@ -206,7 +215,7 @@ class AutoRunPanel(QWidget):
         ih_l = QHBoxLayout(iter_hdr); ih_l.setContentsMargins(12, 0, 12, 0)
         lbl_i = QLabel(tr("ИТЕРАЦИИ")); lbl_i.setObjectName("sectionLabel")
         self._lbl_iter_count = QLabel("0 / 0")
-        self._lbl_iter_count.setStyleSheet("color:#565f89;font-size:11px;")
+        self._lbl_iter_count.setObjectName("statusLabel")
         ih_l.addWidget(lbl_i); ih_l.addStretch(); ih_l.addWidget(self._lbl_iter_count)
         ll.addWidget(iter_hdr)
 
@@ -223,13 +232,13 @@ class AutoRunPanel(QWidget):
 
         # Summary stats
         stats_frame = QFrame()
-        stats_frame.setStyleSheet("background:#0A0D14;border-top:1px solid #1E2030;")
+        stats_frame.setObjectName("inputArea")
         stats_frame.setFixedHeight(60)
         sf_l = QVBoxLayout(stats_frame); sf_l.setContentsMargins(12, 6, 12, 6); sf_l.setSpacing(4)
         self._lbl_stats1 = QLabel(tr("Патчей применено: 0  |  Откатов: 0"))
-        self._lbl_stats1.setStyleSheet("color:#A9B1D6;font-size:11px;")
+        self._lbl_stats1.setObjectName("statusLabel")
         self._lbl_stats2 = QLabel("")
-        self._lbl_stats2.setStyleSheet("color:#565f89;font-size:10px;")
+        self._lbl_stats2.setObjectName("statusLabel")
         sf_l.addWidget(self._lbl_stats1); sf_l.addWidget(self._lbl_stats2)
         ll.addWidget(stats_frame)
 
@@ -283,9 +292,9 @@ class AutoRunPanel(QWidget):
         self._prompt_view = QPlainTextEdit()
         self._prompt_view.setReadOnly(True)
         self._prompt_view.setFont(QFont("JetBrains Mono,Cascadia Code,Consolas", 9))
-        self._prompt_view.setStyleSheet("background:#070A12;color:#9AA5CE;border:none;padding:6px;")
+        self._prompt_view.setObjectName("logView")
         self._prompt_view.setPlaceholderText(tr("Промпт появится здесь когда AI начнёт анализ..."))
-        self._prompt_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._prompt_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         l1.addWidget(self._prompt_view)
         self._ai_subtabs.addTab(p1, tr("📤 Промпт"))
 
@@ -294,9 +303,9 @@ class AutoRunPanel(QWidget):
         self._ai_view = QPlainTextEdit()
         self._ai_view.setReadOnly(True)
         self._ai_view.setFont(QFont("Segoe UI,Arial", 11))
-        self._ai_view.setStyleSheet("background:#0A0D14;color:#CDD6F4;border:none;padding:8px;")
+        self._ai_view.setObjectName("logView")
         self._ai_view.setPlaceholderText(tr("Ответ AI появится здесь после анализа..."))
-        self._ai_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._ai_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         l2.addWidget(self._ai_view)
         self._ai_subtabs.addTab(p2, tr("🤖 Ответ AI"))
 
@@ -310,7 +319,7 @@ class AutoRunPanel(QWidget):
         # Stats row
         stats_row = QHBoxLayout(); stats_row.setContentsMargins(6,4,6,4)
         self._patch_stat_lbl = QLabel(tr("Патчей применено: 0  |  Отказов: 0"))
-        self._patch_stat_lbl.setStyleSheet("color:#565F89;font-size:10px;")
+        self._patch_stat_lbl.setObjectName("statusLabel")
         btn_clr_p = QPushButton(tr("Очистить")); btn_clr_p.setFixedWidth(70)
         btn_clr_p.clicked.connect(lambda: self._patches_view.clear())
         stats_row.addWidget(self._patch_stat_lbl); stats_row.addStretch(); stats_row.addWidget(btn_clr_p)
@@ -320,9 +329,6 @@ class AutoRunPanel(QWidget):
         self._patches_view.setReadOnly(True)
         self._patches_view.setFont(QFont("JetBrains Mono,Cascadia Code,Consolas", 10))
         self._patches_view.setObjectName("logView")
-        self._patches_view.setStyleSheet(
-            "background:#070A12;color:#CDD6F4;border:none;padding:4px;"
-        )
         self._patches_view.setPlaceholderText(tr("Применённые патчи появятся здесь..."))
         self._patches_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._patch_applied_count = 0
@@ -372,7 +378,7 @@ class AutoRunPanel(QWidget):
     def _stop_pipeline(self):
         self._engine.cancel()
         self._btn_stop.setEnabled(False)
-        self._set_status(tr("⏹ Остановка..."), "#E0AF68")
+        self._set_status(tr("⏹ Остановка..."), get_color("warn"))
 
     # ── Event Handlers ─────────────────────────────────────
 
@@ -381,7 +387,7 @@ class AutoRunPanel(QWidget):
         d = evt.data
 
         if t == "pipeline_start":
-            self._set_status(tr("▶ Запуск"), "#9ECE6A")
+            self._set_status(tr("▶ Запуск"), get_color("ok"))
             self._progress.setMaximum(d.get("max_iterations", 10))
 
         elif t == "iteration_start":
@@ -400,10 +406,10 @@ class AutoRunPanel(QWidget):
             msg = f"{role_tag} Запуск: {d['script']}"
             self._log_system(msg)
             if self._current_card:
-                self._current_card.update_status(f"▶ {d['script'][:20]}", "#7AA2F7")
+                self._current_card.update_status(f"▶ {d['script'][:20]}", get_color("ac"))
 
         elif t == "script_done":
-            c = "#9ECE6A" if d["success"] else "#F7768E"
+            c = get_color("ok") if d["success"] else get_color("err")
             status = "✓ OK" if d["success"] else f"✗ код {d['exit_code']}"
             self._log_system(f"[{d['script']}] {status} ({d['elapsed']})", c)
 
@@ -411,22 +417,21 @@ class AutoRunPanel(QWidget):
             line = d.get("line", "")
             stream = d.get("stream", "OUT")
             if stream == "ERR":
-                self._log_line(f"[ERR] {line}", "#F7768E")
+                self._log_line(f"[ERR] {line}", get_color("err"))
             else:
-                # Color-code important lines
                 if any(w in line.lower() for w in ("error", "exception", "traceback")):
-                    self._log_line(line, "#F7768E")
+                    self._log_line(line, get_color("err"))
                 elif any(w in line.lower() for w in ("warning", "warn")):
-                    self._log_line(line, "#E0AF68")
+                    self._log_line(line, get_color("warn"))
                 elif any(w in line.lower() for w in ("epoch", "loss", "acc", "score", "precision", "recall")):
                     self._log_line(line, "#BB9AF7")
                 else:
-                    self._log_line(line, "#CDD6F4")
+                    self._log_line(line, get_color("tx0"))
 
         elif t == "ai_thinking":
-            self._log_system(f"🤖 {d['message']}", "#7AA2F7")
+            self._log_system(f"🤖 {d['message']}", get_color("ac"))
             if self._current_card:
-                self._current_card.update_status(f"🤖 {d['message'][:20]}", "#7AA2F7")
+                self._current_card.update_status(f"🤖 {d['message'][:20]}", get_color("ac"))
 
         elif t == "prompt_sent":
             it = d.get("iteration", "?")
@@ -435,9 +440,8 @@ class AutoRunPanel(QWidget):
             header = f"═══ ПРОМПТ ИТЕРАЦИИ {it} [{strat}] ═══\n\n"
             self._prompt_view.setPlainText(header + prompt_text)
             self._ai_subtabs.setCurrentIndex(0)
-            # Log to main log
             tok_est = len(prompt_text) // 4
-            self._log_system(f"📤 Промпт отправлен: ~{tok_est} токенов", "#565F89")
+            self._log_system(f"📤 Промпт отправлен: ~{tok_est} токенов", get_color("tx2"))
 
         elif t == "ai_full_response":
             it = d.get("iteration", "?")
@@ -445,29 +449,27 @@ class AutoRunPanel(QWidget):
             header = f"═══ ОТВЕТ AI — ИТЕРАЦИЯ {it} ═══\n\n"
             self._ai_view.setPlainText(header + resp)
             self._ai_subtabs.setCurrentIndex(1)
-            # Log shortened response to main log
             short = resp[:200].replace("\n", " ") + ("..." if len(resp) > 200 else "")
-            self._log_system(f"📥 AI ответил: {short}", "#7AA2F7")
+            self._log_system(f"📥 AI ответил: {short}", get_color("ac"))
 
         elif t == "ai_response":
             count = d.get("patches_found", 0)
             msg = f"🤖 AI: найдено {count} патч(ей)"
             if d.get("has_goal_signal"):
                 msg += tr(" • ЦЕЛЬ ДОСТИГНУТА")
-            self._log_system(msg, "#9ECE6A")
+            self._log_system(msg, get_color("ok"))
 
         elif t == "patch_applied":
             lines_ch = d.get("lines_changed", 0)
             sign = "+" if lines_ch >= 0 else ""
             self._log_system(
                 f"✓ Патч → {d['file']} ({sign}{lines_ch} строк)",
-                "#9ECE6A"
+                get_color("ok")
             )
             self._patch_applied_count += 1
             self._patch_stat_lbl.setText(
                 f"Патчей применено: {self._patch_applied_count}  |  Отказов: {self._patch_failed_count}"
             )
-            # Show diff in patches tab
             ts = datetime.now().strftime("%H:%M:%S")
             search = d.get("search", "")
             replace = d.get("replace", "")
@@ -482,14 +484,13 @@ class AutoRunPanel(QWidget):
                 f"{sep2}\n\n"
             )
             self._patches_view.appendPlainText(diff_text)
-            # Auto-scroll patches
             self._patches_view.verticalScrollBar().setValue(
                 self._patches_view.verticalScrollBar().maximum()
             )
 
         elif t == "patch_failed":
             reason = d.get("reason", "?")
-            self._log_system(f"✗ Патч не применён: {reason[:80]}", "#F7768E")
+            self._log_system(f"✗ Патч не применён: {reason[:80]}", get_color("err"))
             self._patch_failed_count += 1
             self._patch_stat_lbl.setText(
                 f"Патчей применено: {self._patch_applied_count}  |  Отказов: {self._patch_failed_count}"
@@ -500,18 +501,18 @@ class AutoRunPanel(QWidget):
             )
 
         elif t == "rollback":
-            self._log_system(f"↩ Откат: {d.get('reason','')}", "#F7768E")
+            self._log_system(f"↩ Откат: {d.get('reason','')}", get_color("err"))
             if self._current_card:
-                self._current_card.update_status(tr("↩ Откат"), "#F7768E")
+                self._current_card.update_status(tr("↩ Откат"), get_color("err"))
 
         elif t == "rollback_file":
-            self._log_system(f"  ↩ Файл восстановлен: {d['file']}", "#E0AF68")
+            self._log_system(f"  ↩ Файл восстановлен: {d['file']}", get_color("warn"))
 
         elif t == "iteration_done":
             n = d["iteration"]
             if self._current_card:
                 success = d["success"] and not d["rolled_back"]
-                c = "#9ECE6A" if success else "#F7768E"
+                c = get_color("ok") if success else get_color("err")
                 status_txt = tr("✓ Успешно") if success else (tr("↩ Откат") if d["rolled_back"] else tr("⚠ Ошибки"))
                 if d.get("goal_achieved"):
                     status_txt = tr("🎯 Цель!")
@@ -523,8 +524,11 @@ class AutoRunPanel(QWidget):
             self._update_stats()
 
         elif t == "pipeline_error":
-            self._log_system(f"❌ Ошибка: {d['error']}", "#F7768E")
-            self._set_status(f"❌ Ошибка", "#F7768E")
+            self._log_system(f"❌ Ошибка: {d['error']}", get_color("err"))
+            self._set_status(f"❌ Ошибка", get_color("err"))
+
+        elif t == "consensus_result":
+            self._log_system(f"🤝 Консенсус: {d.get('notes','')}", get_color("ac"))
 
     def _on_pipeline_finished(self, run: PipelineRun):
         self._current_run = run
@@ -533,11 +537,11 @@ class AutoRunPanel(QWidget):
 
         stop = run.stop_reason or tr("Завершён")
         total_patches = run.total_patches_applied
-        self._set_status(f"✓ Завершён: {stop}", "#9ECE6A")
+        self._set_status(f"✓ Завершён: {stop}", get_color("ok"))
         self._log_system(
             f"Pipeline завершён • {run.current_iteration} итераций • "
             f"{total_patches} патчей • {run.total_rollbacks} откатов • {stop}",
-            "#9ECE6A"
+            get_color("ok")
         )
         self._progress.setValue(self._progress.maximum())
 
@@ -555,26 +559,28 @@ class AutoRunPanel(QWidget):
     def _on_pipeline_error(self, error: str):
         self._timer.stop()
         self._btn_stop.setEnabled(False)
-        self._set_status(f"❌ {error[:40]}", "#F7768E")
+        self._set_status(f"❌ {error[:40]}", get_color("err"))
         self.status_changed.emit(f"Pipeline ошибка: {error}")
 
     # ── Helpers ────────────────────────────────────────────
 
-    def _log_line(self, line: str, color: str = "#CDD6F4"):
-        html = (f'<span style="color:{color};font-family:monospace;font-size:10px;">'
+    def _log_line(self, line: str, color: str = ""):
+        c = color or get_color("tx0")
+        html = (f'<span style="color:{c};font-family:monospace;font-size:10px;">'
                 f'{line.replace("&","&amp;").replace("<","&lt;")}</span>')
         self._live_log.appendHtml(html)
         if self._chk_autoscroll.isChecked():
             self._live_log.verticalScrollBar().setValue(
                 self._live_log.verticalScrollBar().maximum())
 
-    def _log_system(self, message: str, color: str = "#565f89"):
+    def _log_system(self, message: str, color: str = ""):
         ts = datetime.now().strftime("%H:%M:%S")
-        self._log_line(f"[{ts}] {message}", color)
+        self._log_line(f"[{ts}] {message}", color or get_color("tx2"))
 
-    def _set_status(self, text: str, color: str = "#CDD6F4"):
+    def _set_status(self, text: str, color: str = ""):
         self._lbl_status.setText(text)
-        self._lbl_status.setStyleSheet(f"color:{color};font-size:12px;")
+        c = color or get_color("tx0")
+        self._lbl_status.setStyleSheet(f"color:{c};font-size:12px;")
 
     def _scroll_iter_to_bottom(self):
         QTimer.singleShot(50, lambda:

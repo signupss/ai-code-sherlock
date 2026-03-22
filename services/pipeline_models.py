@@ -35,6 +35,7 @@ class PipelineStatus(str, Enum):
 class ScriptRole(str, Enum):
     PRIMARY   = "primary"
     VALIDATOR = "validator"
+    CONTEXT   = "context"   # read into AI prompt, never executed, never patched
 
 
 class AIStrategy(str, Enum):
@@ -199,6 +200,15 @@ class PipelineConfig:
     output_max_chars: int = 6000
     max_context_tokens: int = 200000  # can set up to 2M for large models
 
+    # AI request timeout — increase if model is slow on large contexts
+    ai_timeout_seconds: int = 600    # 10 minutes default (was implicitly 300s)
+
+    # AI retry — how many times to retry if AI returns empty/timeout before giving up
+    ai_retry_count: int = 3          # 0 = no retries (fail immediately)
+
+    # Infinite-loop detection — kill process + rollback + repatch if same error repeats N times
+    loop_error_threshold: int = 20   # 0 = disabled
+
     # History
     include_previous_patches: bool = True
     memory_iterations: int = 5   # how many past iterations to include in context
@@ -228,6 +238,11 @@ class PipelineConfig:
     def validator_scripts(self) -> list[ScriptConfig]:
         return [s for s in self.scripts if s.role == ScriptRole.VALIDATOR]
 
+    @property
+    def context_scripts(self) -> list[ScriptConfig]:
+        """Scripts shown to AI as read-only context — never executed, never patched."""
+        return [s for s in self.scripts if s.role == ScriptRole.CONTEXT]
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -245,6 +260,9 @@ class PipelineConfig:
             "log_max_chars": self.log_max_chars,
             "output_max_chars": self.output_max_chars,
             "max_context_tokens": self.max_context_tokens,
+            "ai_timeout_seconds": self.ai_timeout_seconds,
+            "ai_retry_count": self.ai_retry_count,
+            "loop_error_threshold": self.loop_error_threshold,
             "include_previous_patches": self.include_previous_patches,
             "memory_iterations": self.memory_iterations,
             "metric_patterns": self.metric_patterns,
@@ -273,6 +291,9 @@ class PipelineConfig:
             log_max_chars=d.get("log_max_chars", 12000),
             output_max_chars=d.get("output_max_chars", 6000),
             max_context_tokens=d.get("max_context_tokens", 200000),
+            ai_timeout_seconds=d.get("ai_timeout_seconds", 600),
+            ai_retry_count=d.get("ai_retry_count", 3),
+            loop_error_threshold=d.get("loop_error_threshold", 20),
             include_previous_patches=d.get("include_previous_patches", True),
             memory_iterations=d.get("memory_iterations", 5),
             metric_patterns=d.get("metric_patterns", []),
@@ -296,10 +317,12 @@ class IterationResult:
     started_at: datetime = field(default_factory=datetime.now)
     finished_at: Optional[datetime] = None
     error: str = ""
+    loop_detected: bool = False          # True if infinite error loop was auto-stopped
+    loop_error_sample: str = ""          # sample of the repeated error line
 
     @property
     def success(self) -> bool:
-        return not self.rolled_back and not self.error
+        return not self.rolled_back and not self.error and not self.loop_detected
 
     @property
     def elapsed(self) -> float:

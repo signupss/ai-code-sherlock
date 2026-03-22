@@ -151,6 +151,8 @@ class CustomApiProvider(IAiModelProvider):
 
     async def complete(self, messages: list[ChatMessage]) -> str:
         payload = self._build_payload(messages, stream=False)
+        # 900s = 15 min — must be larger than asyncio.wait_for timeout in _query_ai (600s)
+        # so the asyncio layer fires first and gives a readable error message
         timeout = aiohttp.ClientTimeout(total=900)
 
         async with aiohttp.ClientSession(timeout=timeout, headers=self._headers()) as session:
@@ -173,7 +175,7 @@ class CustomApiProvider(IAiModelProvider):
     async def stream(self, messages: list[ChatMessage]) -> AsyncGenerator[str, None]:
         import json as json_mod
         payload = self._build_payload(messages, stream=True)
-        timeout = aiohttp.ClientTimeout(total=900)
+        timeout = aiohttp.ClientTimeout(total=900)  # 15 min — larger than asyncio layer
 
         async with aiohttp.ClientSession(timeout=timeout, headers=self._headers()) as session:
             async with session.post(

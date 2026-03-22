@@ -451,6 +451,80 @@ def _smart_compress_code(source: str) -> str:
 
     return '\n'.join(result)
 
+class _LoopDetector:
+    """
+    Detects infinite error loops in script output.
+
+    Tracks consecutive *normalized* log lines. If the same error repeats
+    ``threshold`` times in a row, ``was_triggered`` flips to True and
+    ``add()`` keeps returning True on every subsequent call so the caller
+    can kill the process.
+
+    Normalisation strips timestamps, memory addresses and pure numbers so
+    that lines like:
+        [12:34:56] ERROR foo operands cannot be broadcast (512,) (1,)
+        [12:34:57] ERROR foo operands cannot be broadcast (512,) (1,)
+    are treated as identical.
+    """
+
+    def __init__(self, threshold: int = 20):
+        self.threshold = threshold
+        self.was_triggered = False
+        self.repeated_count: int = 0
+        self.error_sample: str = ""
+        self._last_key: str = ""
+        self._run: int = 0
+
+    def add(self, line: str) -> bool:
+        """
+        Register a new output line.
+        Returns True (and sets was_triggered) when the loop threshold is hit.
+        """
+        if self.was_triggered:
+            return True
+
+        key = self._normalize(line)
+        if not key:
+            return False
+
+        if key == self._last_key:
+            self._run += 1
+        else:
+            self._last_key = key
+            self._run = 1
+            self.error_sample = line.strip()[:200]
+
+        if self._run >= self.threshold:
+            self.was_triggered = True
+            self.repeated_count = self._run
+            return True
+
+        return False
+
+    def reset(self) -> None:
+        self.was_triggered = False
+        self.repeated_count = 0
+        self._last_key = ""
+        self._run = 0
+        self.error_sample = ""
+
+    @staticmethod
+    def _normalize(line: str) -> str:
+        """Strip variable parts so semantically-equal lines compare equal."""
+        s = line.strip()
+        if not s:
+            return ""
+        # Remove timestamps  [HH:MM:SS]  or  HH:MM:SS.mmm
+        s = re.sub(r"\b\d{2}:\d{2}:\d{2}(?:\.\d+)?\b", "", s)
+        # Remove memory addresses
+        s = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", s)
+        # Remove pure numbers (but keep error names)
+        s = re.sub(r"\b\d+\b", "N", s)
+        # Collapse whitespace
+        s = re.sub(r"\s+", " ", s).strip()
+        return s[:200].lower()
+
+
 class AutoImproveEngine:
 
     def __init__(
@@ -610,6 +684,8 @@ class AutoImproveEngine:
 
         # ── Run primary scripts ───────────────────────────
         primary_results: list[ScriptResult] = []
+        _loop_det = _LoopDetector(threshold=getattr(cfg, "loop_error_threshold", 20))
+
         for sc in cfg.primary_scripts:
             self._emit("script_start", {"script": sc.name, "role": "primary",
                                         "iteration": iteration})
@@ -622,15 +698,32 @@ class AutoImproveEngine:
                     delay_seconds=sc.auto_input.delay_seconds,
                 )
 
+            _loop_det.reset()
+            _kill_emitted = [False]  # mutable flag captured in closure
+
+            def _make_on_line(script_name: str):
+                def _cb(line: str, stream: str):
+                    self._emit("log_line", {"script": script_name,
+                                            "line": line, "stream": stream})
+                    if _loop_det.add(line) and not _kill_emitted[0]:
+                        _kill_emitted[0] = True
+                        self._emit("ai_thinking", {
+                            "message": (
+                                f"🔄 [{script_name}] ЗАЦИКЛЕННАЯ ОШИБКА "
+                                f"×{_loop_det.threshold}+ подряд — "
+                                "принудительная остановка процесса!"
+                            )
+                        })
+                        self._runner.kill_current()
+                return _cb
+
             sr = await self._runner.run_async(
                 script_path=sc.script_path,
                 args=sc.args,
                 working_dir=sc.working_dir or None,
                 env_vars=sc.env_vars or None,
                 timeout_seconds=sc.timeout_seconds,
-                on_line=lambda line, stream, name=sc.name: self._emit("log_line", {
-                    "script": name, "line": line, "stream": stream
-                }),
+                on_line=_make_on_line(sc.name),
                 auto_input=auto_input,
             )
             primary_results.append(sr)
@@ -639,6 +732,57 @@ class AutoImproveEngine:
                 "script": sc.name, "exit_code": sr.exit_code,
                 "success": sr.success, "elapsed": f"{sr.elapsed_seconds:.1f}s"
             })
+
+        # ── Loop detection: rollback + force repatch ──────────────────────────
+        if _loop_det.was_triggered:
+            result.loop_detected     = True
+            result.loop_error_sample = _loop_det.error_sample
+            self._emit("ai_thinking", {
+                "message": (
+                    f"⛔ Обнаружен бесконечный цикл ошибок "
+                    f"({_loop_det.repeated_count} одинаковых строк подряд).\n"
+                    f"Пример: {_loop_det.error_sample[:120]}"
+                )
+            })
+            # Откатить патчи последней итерации, которая что-то применила
+            last_with_patches = next(
+                (it for it in reversed(run.iterations) if it.patches_applied > 0),
+                None
+            )
+            if last_with_patches is not None:
+                self._emit("ai_thinking", {
+                    "message": "↩️ Откат патчей, вызвавших зацикливание..."
+                })
+                for sc in cfg.primary_scripts:
+                    if sc.allow_patching:
+                        versions = self._vc.get_versions(sc.script_path)
+                        if versions:
+                            try:
+                                self._vc.restore_version(versions[0])
+                                self._emit("rollback_file", {
+                                    "file": Path(sc.script_path).name,
+                                    "reason": "loop_detected"
+                                })
+                            except Exception as _e:
+                                if self._logger:
+                                    self._logger.error(
+                                        f"Loop rollback failed for {sc.script_path}: {_e}",
+                                        source="AutoImprove"
+                                    )
+            self._em.add_avoid_pattern(
+                description=f"Итерация {iteration}: патч вызвал бесконечный цикл ошибок",
+                error_context=_loop_det.error_sample,
+                bad_approach=(
+                    f"Последний патч привёл к {_loop_det.repeated_count} "
+                    "повторяющимся ошибкам в логе"
+                ),
+                better_approach=(
+                    "Исправить первопричину ошибки, а не её симптом; "
+                    "проверить изменения на корректность до применения"
+                ),
+            )
+            result.rolled_back = True
+            # Продолжаем итерацию — AI увидит информацию о цикле и предложит другой подход
 
         # Extract metrics from logs
         for sr in primary_results:
@@ -715,6 +859,8 @@ class AutoImproveEngine:
             result.ai_analysis = ai_response
             self._emit("consensus_result", {"notes": consensus_notes})
         else:
+            token_est = TokenBudget.estimate_tokens(prompt)
+            self._emit("ai_thinking", {"message": f"📤 Промпт отправлен: ~{token_est:,} токенов"})
             ai_response = await self._query_ai(prompt, cfg)
             result.ai_analysis = ai_response
         # Emit full AI response text for logging
@@ -895,6 +1041,31 @@ class AutoImproveEngine:
                             "Если не знаешь точный код — попроси: 'Покажи строки X-Y из файла'\n"
                         )
 
+        # Companion / context scripts (read-only, never patched)
+        if cfg.context_scripts:
+            parts.append("## СОПУТСТВУЮЩИЕ СКРИПТЫ (только чтение — не патчить)\n")
+            parts.append(
+                "Эти файлы предоставлены **только для понимания архитектуры**.\n"
+                "Не предлагай патчи для них — патчи применяются только к основным скриптам.\n"
+            )
+            for sc in cfg.context_scripts:
+                if Path(sc.script_path).exists():
+                    content = Path(sc.script_path).read_text(encoding="utf-8", errors="replace")
+                    token_est = TokenBudget.estimate_tokens(content)
+                    budget = cfg.max_context_tokens // 6   # max 1/6 токенов на контекст
+                    if token_est > budget:
+                        from services.project_manager import PythonSkeletonExtractor
+                        content = PythonSkeletonExtractor().extract(content)
+                        parts.append(
+                            f"### `{sc.name}` [СКЕЛЕТ, сопутствующий контекст]:\n"
+                            f"```python\n{content}\n```\n"
+                        )
+                    else:
+                        parts.append(
+                            f"### `{sc.name}` [сопутствующий контекст]:\n"
+                            f"```python\n{content}\n```\n"
+                        )
+
         # Logs
         parts.append("## ЛОГИ\n")
         for sr in script_results:
@@ -916,14 +1087,39 @@ class AutoImproveEngine:
             parts.append(f"## ИСТОРИЯ ПОСЛЕДНИХ {mem} ИТЕРАЦИЙ\n")
             for prev in history[-mem:]:
                 metrics_str = str(prev.metrics_extracted) if prev.metrics_extracted else "нет"
-                outcome = "✓" if prev.success and not prev.rolled_back else "↩ откат"
+                if getattr(prev, "loop_detected", False):
+                    outcome = "🔄 ЗАЦИКЛИВАНИЕ (откат)"
+                elif prev.success and not prev.rolled_back:
+                    outcome = "✓"
+                else:
+                    outcome = "↩ откат"
                 parts.append(
                     f"**Итерация {prev.iteration}** [{prev.strategy_used.value}] "
                     f"{outcome} | патчей={prev.patches_applied} | метрики={metrics_str}\n"
                 )
+                if getattr(prev, "loop_detected", False) and getattr(prev, "loop_error_sample", ""):
+                    parts.append(
+                        f"⚠️ Скрипт зациклился на ошибке: `{prev.loop_error_sample[:150]}`\n"
+                        "Патчи той итерации откачены автоматически.\n"
+                    )
                 if prev.ai_analysis:
                     preview = prev.ai_analysis[:300] + ("..." if len(prev.ai_analysis) > 300 else "")
                     parts.append(f"Анализ: {preview}\n")
+
+        # Loop warning for current iteration
+        loop_iters = [it for it in history[-3:] if getattr(it, "loop_detected", False)]
+        if loop_iters:
+            last_loop = loop_iters[-1]
+            parts.append(
+                "## ⚠️ КРИТИЧНО: ПРЕДЫДУЩИЙ ПАТЧ ВЫЗВАЛ БЕСКОНЕЧНЫЙ ЦИКЛ ОШИБОК\n"
+                f"Скрипт повторял одну и ту же строку **{last_loop.repeated_count} раз подряд**:\n"
+                f"```\n{getattr(last_loop, 'loop_error_sample', '')[:200]}\n```\n"
+                "Патчи из той итерации **откачены автоматически**.\n"
+                "**Требования к новому патчу:**\n"
+                "1. Предложи принципиально другой подход — не повторяй предыдущий\n"
+                "2. Исправь первопричину ошибки, а не её симптом\n"
+                "3. Убедись что SEARCH_BLOCK точно совпадает с текущим (откаченным) кодом\n"
+            )
 
         # Error map
         err_ctx = self._em.build_context_block(self._extract_errors(script_results))
@@ -985,7 +1181,63 @@ SEARCH_BLOCK должен ТОЧНО совпадать с кодом файла
             ChatMessage(role=MessageRole.SYSTEM, content=system),
             ChatMessage(role=MessageRole.USER, content=prompt),
         ]
-        return await self._mm.active_provider.complete(messages)
+
+        ai_timeout = getattr(cfg, "ai_timeout_seconds", 600)
+        max_attempts = max(1, getattr(cfg, "ai_retry_count", 3) + 1)  # +1 = first attempt
+
+        last_error = ""
+        for attempt in range(1, max_attempts + 1):
+            attempt_label = f"попытка {attempt}/{max_attempts}" if max_attempts > 1 else ""
+            try:
+                if attempt > 1:
+                    wait = min(10 * (attempt - 1), 30)   # 10s, 20s, 30s … cap at 30
+                    self._emit("ai_thinking", {
+                        "message": f"⏳ Повтор запроса к AI ({attempt_label}), жду {wait}с..."
+                    })
+                    await asyncio.sleep(wait)
+                else:
+                    self._emit("ai_thinking", {
+                        "message": f"📡 Отправляю запрос к AI{' (' + attempt_label + ')' if max_attempts > 1 else ''}..."
+                    })
+
+                response = await asyncio.wait_for(
+                    self._mm.active_provider.complete(messages),
+                    timeout=ai_timeout,
+                )
+
+                if not response or not response.strip():
+                    last_error = "AI вернул пустой ответ"
+                    self._emit("ai_thinking", {
+                        "message": f"⚠ {last_error} ({attempt_label})"
+                    })
+                    continue   # retry
+
+                return response   # ✓ success
+
+            except asyncio.TimeoutError:
+                last_error = (
+                    f"AI не ответил за {ai_timeout}с "
+                    f"(~{TokenBudget.estimate_tokens(prompt):,} токенов в промпте)"
+                )
+                self._emit("ai_thinking", {
+                    "message": f"⏱ Таймаут {attempt_label}: {last_error}"
+                })
+                # continue loop → retry
+
+            except Exception as e:
+                last_error = str(e)
+                self._emit("ai_thinking", {
+                    "message": f"❌ Ошибка {attempt_label}: {last_error[:120]}"
+                })
+                # For non-timeout errors, still retry — could be transient network issue
+
+        # All attempts exhausted
+        raise RuntimeError(
+            f"AI не ответил после {max_attempts} попыток. "
+            f"Последняя ошибка: {last_error}. "
+            f"Совет: уменьши max_context_tokens или log_max_chars, "
+            f"увеличь ai_timeout_seconds в настройках пайплайна."
+        )
 
     async def _query_consensus(
         self, cfg: PipelineConfig, prompt: str

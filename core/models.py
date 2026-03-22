@@ -252,6 +252,9 @@ class AppSettings:
     include_full_logs: bool = False
     max_file_chars: int = 6000
     max_log_chars: int = 8000
+    # Manual chat AI request settings
+    chat_timeout_seconds: int = 600   # seconds to wait for AI response in chat
+    chat_retry_count: int = 3         # retries on empty/timeout response in chat
     # Appearance
     accent_color: str = "#7AA2F7"   # primary accent (buttons, highlights)
     ui_font_size: int = 11          # global UI font point size
@@ -273,6 +276,8 @@ class AppSettings:
             "include_full_logs": self.include_full_logs,
             "max_file_chars": self.max_file_chars,
             "max_log_chars": self.max_log_chars,
+            "chat_timeout_seconds": self.chat_timeout_seconds,
+            "chat_retry_count": self.chat_retry_count,
             "accent_color": self.accent_color,
             "ui_font_size": self.ui_font_size,
             "language": self.language,
@@ -295,6 +300,8 @@ class AppSettings:
             include_full_logs=d.get("include_full_logs", False),
             max_file_chars=d.get("max_file_chars", 6000),
             max_log_chars=d.get("max_log_chars", 8000),
+            chat_timeout_seconds=d.get("chat_timeout_seconds", 600),
+            chat_retry_count=d.get("chat_retry_count", 3),
             accent_color=d.get("accent_color", "#7AA2F7"),
             ui_font_size=d.get("ui_font_size", 11),
             language=d.get("language", "ru"),

@@ -154,11 +154,48 @@ _RU_TO_EN: dict[str, str] = {
     "История диалога (сообщений):":            "Conversation history (messages):",
     "Лимит символов файла:":                   "File char limit:",
     "Лимит символов лога:":                    "Log char limit:",
+    # ── Settings — AI request group (manual chat) ──────────────
+    "Запросы к AI (ручной чат)":   "AI Requests (manual chat)",
+    "Настройки применяются к запросам из основного чата.\nНе влияют на Pipeline — у него свои настройки.":
+        "Settings apply to requests from the main chat.\nDo not affect the Pipeline — it has its own settings.",
+    "Таймаут AI:":                 "AI Timeout:",
+    "Повторов при сбое:":          "Retries on failure:",
+    "Сколько секунд ждать ответа AI в чате.\n300=5мин  600=10мин  1200=20мин\nУвеличь если модель медленная или контекст большой.":
+        "How many seconds to wait for an AI response in chat.\n300=5min  600=10min  1200=20min\nIncrease if the model is slow or context is large.",
+    "Сколько раз повторить запрос если AI не ответил.\n0 = нет повторов  3 = до 4 попыток суммарно\nМежду попытками: пауза 10с, 20с, 30с.":
+        "How many times to retry if AI did not respond.\n0 = no retries  3 = up to 4 attempts total\nBetween attempts: pause 10s, 20s, 30s.",
+    # ── Settings / Pipeline — shared timeout/retry labels ──────
+    "= нет повторов":          "= no retries",
+    "до":                      "up to",
+    "попыток суммарно":        "attempts total",
+    "жду":                     "waiting",
+    # ── Pipeline advanced tab — AI request group ───────────────
+    "Запросы к AI":            "AI Requests",
+    "Настройки применяются к каждому вызову AI в пайплайне.":
+        "Settings apply to every AI call in the pipeline.",
+    "Таймаут AI:":             "AI Timeout:",
+    "Повторов при сбое AI:":   "Retries on AI failure:",
+    "Сколько секунд ждать ответа AI.\n300=5мин  600=10мин  1200=20мин  3600=1ч\nУвеличь если промпт большой и модель медленная.":
+        "How many seconds to wait for AI response.\n300=5min  600=10min  1200=20min  3600=1h\nIncrease if the prompt is large and the model is slow.",
+    "Сколько раз повторять запрос если AI не ответил или вернул пустой ответ.\n0 = нет повторов (провал сразу)\n3 = до 4 попыток суммарно (1 + 3 повтора)\nМежду попытками: пауза 10с, 20с, 30с (нарастающая).":
+        "How many times to retry if AI didn't respond or returned empty.\n0 = no retries (fail immediately)\n3 = up to 4 attempts total (1 + 3 retries)\nBetween attempts: pause 10s, 20s, 30s (increasing).",
+    # ── Chat retry status messages ──────────────────────────────
+    "Повтор":                  "Retry",
+    "с":                       "s",
     "Кастомные стратегии AI":        "Custom AI Strategies",
     "+ Создать":                     "+ Create",
     "✏ Изменить":                    "✏ Edit",
     "✕ Удалить":                     "✕ Delete",
     "Цвет темы (акцент)":            "Theme Color (accent)",
+    # ── Theme selector ──────────────────────────────────────
+    "Тема оформления":               "Color Theme",
+    "Цветовая схема интерфейса. Изменение применяется сразу.":
+        "Interface color scheme. Change is applied immediately.",
+    "Тема:":                         "Theme:",
+    "🌙 Dark (Tokyo Night)":         "🌙 Dark (Tokyo Night)",
+    "☀️ Light":                      "☀️ Light",
+    "🎨 Monokai":                    "🎨 Monokai",
+    "🧛 Dracula":                    "🧛 Dracula",
     "HEX:":                          "HEX:",
     "🎨 Выбрать цвет…":              "🎨 Pick color…",
     "Шрифт интерфейса":              "Interface Font",
@@ -222,6 +259,9 @@ _RU_TO_EN: dict[str, str] = {
     "Переменные среды:":             "Env vars:",
     "+ Добавить основной":           "+ Add primary",
     "+ Добавить валидатор":          "+ Add validator",
+    "+ Контекст AI":                 "+ AI Context",
+    "Сопутствующий скрипт — AI видит его при анализе, но не запускает и не патчит":
+        "Companion script — AI sees it during analysis, but doesn't run or patch it",
     "Авто-ввод (автоматические ответы скрипту)": "Auto-input (auto-responses to script)",
     "Включить автоматические ответы stdin": "Enable automatic stdin responses",
     "Задержка:":                     "Delay:",
@@ -495,6 +535,13 @@ _RU_TO_EN: dict[str, str] = {
     "(нет / использовать стандартную)": "(none / use standard)",
     "🎯 Основной":                      "🎯 Primary",
     "✓ Валидатор":                      "✓ Validator",
+    "📖 Контекст":                      "📖 Context",
+    "СОПУТСТВУЮЩИЕ СКРИПТЫ (только чтение — не патчить)":
+        "COMPANION SCRIPTS (read-only — do not patch)",
+    "Эти файлы предоставлены **только для понимания архитектуры**.":
+        "These files are provided **for architectural understanding only**.",
+    "Не предлагай патчи для них — патчи применяются только к основным скриптам.":
+        "Do not suggest patches for them — patches apply only to primary scripts.",
     "Скрипт":                           "Script",
     "Рабочая папка":                    "Working dir",
     "Выбери скрипт":                    "Select script",

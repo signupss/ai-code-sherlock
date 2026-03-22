@@ -25,6 +25,16 @@ except ImportError:
     def register_listener(cb): pass
     def retranslate_widget(w): pass
 
+try:
+    from ui.theme_manager import get_color, register_theme_refresh
+except ImportError:
+    def get_color(k): return {
+        "bg1": "#0E1117", "bg2": "#131722", "bd2": "#1E2030",
+        "tx0": "#CDD6F4", "tx1": "#A9B1D6", "tx2": "#565f89",
+        "sel": "#2E3148",
+    }.get(k, "#CDD6F4")
+    def register_theme_refresh(cb): pass
+
 
 class SettingsDialog(QDialog):
 
@@ -370,20 +380,74 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(grp_ctx)
 
-        # ── Кастомные стратегии ────────────────────────────────
+        # ── Запросы к AI (ручной чат) ──────────────────────────
+        grp_ai = QGroupBox(tr("Запросы к AI (ручной чат)"))
+        fa_l = QFormLayout(grp_ai); fa_l.setSpacing(10)
+
+        fa_l.addRow(QLabel(
+            tr("Настройки применяются к запросам из основного чата.\nНе влияют на Pipeline — у него свои настройки."),
+            objectName="statusLabel"
+        ))
+
+        # Timeout
+        timeout_ai_row = QHBoxLayout()
+        self._spn_chat_timeout = QSpinBox()
+        self._spn_chat_timeout.setRange(30, 7200)
+        self._spn_chat_timeout.setValue(getattr(self._settings, "chat_timeout_seconds", 600))
+        self._spn_chat_timeout.setSuffix(tr(" сек"))
+        self._spn_chat_timeout.setToolTip(
+            tr("Сколько секунд ждать ответа AI в чате.\n"
+               "300=5мин  600=10мин  1200=20мин\n"
+               "Увеличь если модель медленная или контекст большой.")
+        )
+        self._lbl_chat_timeout_human = QLabel()
+        self._lbl_chat_timeout_human.setObjectName("statusLabel")
+        self._spn_chat_timeout.valueChanged.connect(self._update_chat_timeout_label)
+        timeout_ai_row.addWidget(self._spn_chat_timeout)
+        timeout_ai_row.addWidget(self._lbl_chat_timeout_human)
+        timeout_ai_row.addStretch()
+        for lbl_t, secs_t in [("1м", 60), ("5м", 300), ("10м", 600), ("20м", 1200), ("30м", 1800)]:
+            bt = QPushButton(lbl_t); bt.setFixedWidth(38)
+            bt.clicked.connect(lambda _, s=secs_t: self._spn_chat_timeout.setValue(s))
+            timeout_ai_row.addWidget(bt)
+        fa_l.addRow(tr("Таймаут AI:"), timeout_ai_row)
+        self._update_chat_timeout_label(self._spn_chat_timeout.value())
+
+        # Retry count
+        retry_ai_row = QHBoxLayout()
+        self._spn_chat_retry = QSpinBox()
+        self._spn_chat_retry.setRange(0, 10)
+        self._spn_chat_retry.setValue(getattr(self._settings, "chat_retry_count", 3))
+        self._spn_chat_retry.setToolTip(
+            tr("Сколько раз повторить запрос если AI не ответил.\n"
+               "0 = нет повторов  3 = до 4 попыток суммарно\n"
+               "Между попытками: пауза 10с, 20с, 30с.")
+        )
+        self._lbl_chat_retry_total = QLabel()
+        self._lbl_chat_retry_total.setObjectName("statusLabel")
+        self._spn_chat_retry.valueChanged.connect(self._update_chat_retry_label)
+        retry_ai_row.addWidget(self._spn_chat_retry)
+        retry_ai_row.addWidget(self._lbl_chat_retry_total)
+        retry_ai_row.addStretch()
+        fa_l.addRow(tr("Повторов при сбое:"), retry_ai_row)
+        self._update_chat_retry_label(self._spn_chat_retry.value())
+
+        layout.addWidget(grp_ai)
         grp_strat = QGroupBox(tr("Кастомные стратегии AI"))
         fs_l = QVBoxLayout(grp_strat); fs_l.setSpacing(8)
 
         hint = QLabel(
             tr("Создавай собственные стратегии поведения AI для основного чата.\nВыбранная стратегия добавляется к системному промпту вместо стандартной.")
         )
-        hint.setStyleSheet("color:#565f89;font-size:11px;"); hint.setWordWrap(True)
+        hint.setObjectName("statusLabel"); hint.setWordWrap(True)
         fs_l.addWidget(hint)
 
         self._strat_list = QListWidget()
         self._strat_list.setMaximumHeight(140)
         self._strat_list.setStyleSheet(
-            "QListWidget{background:#0E1117;border:1px solid #1E2030;border-radius:6px;}QListWidget::item{padding:6px 10px;border-bottom:1px solid #1A1E2E;}QListWidget::item:selected{background:#2E3148;}"
+            f"QListWidget{{background:{get_color('bg1')};border:1px solid {get_color('bd2')};border-radius:6px;}}"
+            f"QListWidget::item{{padding:6px 10px;border-bottom:1px solid {get_color('bd2')};}}"
+            f"QListWidget::item:selected{{background:{get_color('sel')};}}"
         )
         self._strat_list.currentItemChanged.connect(self._on_strat_selected)
         fs_l.addWidget(self._strat_list)
@@ -418,6 +482,33 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(14)
 
+        # ── Тема оформления ───────────────────────────────────
+        grp_theme = QGroupBox(tr("Тема оформления"))
+        gt = QFormLayout(grp_theme); gt.setSpacing(10)
+
+        hint_th = QLabel(
+            tr("Цветовая схема интерфейса. Изменение применяется сразу.")
+        )
+        hint_th.setObjectName("statusLabel"); hint_th.setWordWrap(True)
+        gt.addRow(hint_th)
+
+        self._cmb_theme = QComboBox()
+        try:
+            from ui.theme_manager import THEMES
+            for key, meta in THEMES.items():
+                self._cmb_theme.addItem(meta["label"], key)
+        except ImportError:
+            for key, lbl in [("dark", "🌙 Dark"), ("light", "☀️ Light"),
+                              ("monokai", "🎨 Monokai"), ("dracula", "🧛 Dracula")]:
+                self._cmb_theme.addItem(lbl, key)
+        cur_theme = getattr(self._settings, "theme", "dark")
+        for i in range(self._cmb_theme.count()):
+            if self._cmb_theme.itemData(i) == cur_theme:
+                self._cmb_theme.setCurrentIndex(i); break
+        self._cmb_theme.currentIndexChanged.connect(self._on_theme_changed)
+        gt.addRow(tr("Тема:"), self._cmb_theme)
+        layout.addWidget(grp_theme)
+
         # ── Цвет акцента ──────────────────────────────────────
         grp_color = QGroupBox(tr("Цвет темы (акцент)"))
         gc = QVBoxLayout(grp_color); gc.setSpacing(12)
@@ -425,7 +516,7 @@ class SettingsDialog(QDialog):
         hint_c = QLabel(
             tr("Основной цвет интерфейса — кнопки, выделения, активные элементы.\nИзменение применится после перезапуска.")
         )
-        hint_c.setStyleSheet("color:#565f89;font-size:11px;"); hint_c.setWordWrap(True)
+        hint_c.setObjectName("statusLabel"); hint_c.setWordWrap(True)
         gc.addWidget(hint_c)
 
         # Preset palette row
@@ -451,8 +542,8 @@ class SettingsDialog(QDialog):
             btn.setToolTip(f"{name} ({hex_color})")
             btn.setStyleSheet(
                 f"QPushButton{{background:{hex_color};border-radius:6px;"
-                f"border:2px solid {'#CDD6F4' if hex_color == current_accent else 'transparent'};}}"
-                f"QPushButton:hover{{border:2px solid #CDD6F4;}}"
+                f"border:2px solid {get_color('tx0') if hex_color == current_accent else 'transparent'};}}"
+                f"QPushButton:hover{{border:2px solid {get_color('tx0')};}}"
             )
             btn.clicked.connect(lambda _, hx=hex_color, b=btn: self._select_preset_color(hx, b))
             palette_row.addWidget(btn)
@@ -473,7 +564,7 @@ class SettingsDialog(QDialog):
         self._lbl_color_preview = QLabel()
         self._lbl_color_preview.setFixedSize(48, 28)
         self._lbl_color_preview.setStyleSheet(
-            f"background:{current_accent};border-radius:6px;border:1px solid #2E3148;"
+            f"background:{current_accent};border-radius:6px;border:1px solid {get_color('bd2')};"
         )
 
         custom_row.addWidget(QLabel("HEX:"))
@@ -490,7 +581,7 @@ class SettingsDialog(QDialog):
         gf = QFormLayout(grp_font); gf.setSpacing(10)
 
         hint_f = QLabel(tr("Размер шрифта всех меню, кнопок и панелей (не редактора кода)."))
-        hint_f.setStyleSheet("color:#565f89;font-size:11px;"); hint_f.setWordWrap(True)
+        hint_f.setObjectName("statusLabel"); hint_f.setWordWrap(True)
         gf.addRow(hint_f)
 
         size_row = QHBoxLayout()
@@ -502,7 +593,7 @@ class SettingsDialog(QDialog):
         self._spn_ui_font.valueChanged.connect(self._on_font_size_changed)
 
         self._lbl_font_preview = QLabel(tr("Предпросмотр текста интерфейса"))
-        self._lbl_font_preview.setStyleSheet("color:#CDD6F4;")
+        self._lbl_font_preview.setObjectName("titleLabel")
         self._on_font_size_changed(self._spn_ui_font.value())
 
         size_row.addWidget(self._spn_ui_font)
@@ -523,7 +614,7 @@ class SettingsDialog(QDialog):
         hint_l = QLabel(
             tr("Язык меню, кнопок и сообщений. Изменение применится при перезапуске.\nЯзык AI-ответов задаётся в системном промпте.")
         )
-        hint_l.setStyleSheet("color:#565f89;font-size:11px;"); hint_l.setWordWrap(True)
+        hint_l.setObjectName("statusLabel"); hint_l.setWordWrap(True)
         gl.addRow(hint_l)
 
         self._cmb_lang = QComboBox()
@@ -539,14 +630,51 @@ class SettingsDialog(QDialog):
         outer.addWidget(scroll)
         return w
 
+    def _on_theme_changed(self, _idx: int):
+        """Apply theme preview immediately when user picks from combobox."""
+        theme_key = self._cmb_theme.currentData() or "dark"
+        accent    = getattr(self, "_accent_color", self._settings.accent_color)
+        font_size = self._spn_ui_font.value()
+        try:
+            from ui.theme_manager import apply_theme
+            apply_theme(accent, font_size, theme_key)
+        except Exception:
+            pass
+        # Refresh font preview label for current theme
+        self._on_font_size_changed(font_size)
+
+    def _update_chat_timeout_label(self, secs: int):
+        h, r = divmod(secs, 3600); m, s = divmod(r, 60)
+        if h:
+            self._lbl_chat_timeout_human.setText(f"= {h} {tr('ч')} {m} {tr('мин')}")
+        elif m:
+            self._lbl_chat_timeout_human.setText(f"= {m} {tr('мин')} {s} {tr('сек')}")
+        else:
+            self._lbl_chat_timeout_human.setText(f"= {s} {tr('сек')}")
+
+    def _update_chat_retry_label(self, retries: int):
+        if retries == 0:
+            self._lbl_chat_retry_total.setText(tr("= нет повторов"))
+        else:
+            self._lbl_chat_retry_total.setText(
+                f"= {tr('до')} {retries + 1} {tr('попыток суммарно')}"
+            )
+
     def _select_preset_color(self, hex_color: str, clicked_btn: QPushButton):
         self._accent_color = hex_color
         self._fld_accent.blockSignals(True)
         self._fld_accent.setText(hex_color)
         self._fld_accent.blockSignals(False)
         self._lbl_color_preview.setStyleSheet(
-            f"background:{hex_color};border-radius:6px;border:1px solid #2E3148;"
+            f"background:{hex_color};border-radius:6px;border:1px solid {get_color('bd2')};"
         )
+        # Live preview with current theme
+        try:
+            from ui.theme_manager import apply_theme
+            apply_theme(hex_color, self._spn_ui_font.value(),
+                        self._cmb_theme.currentData() or "dark")
+        except Exception:
+            pass
 
     def _on_accent_typed(self, text: str):
         if len(text) == 7 and text.startswith("#"):
@@ -554,9 +682,12 @@ class SettingsDialog(QDialog):
                 int(text[1:], 16)
                 self._accent_color = text
                 self._lbl_color_preview.setStyleSheet(
-                    f"background:{text};border-radius:6px;border:1px solid #2E3148;"
+                    f"background:{text};border-radius:6px;border:1px solid {get_color('bd2')};"
                 )
-            except ValueError:
+                from ui.theme_manager import apply_theme
+                apply_theme(text, self._spn_ui_font.value(),
+                            self._cmb_theme.currentData() or "dark")
+            except (ValueError, Exception):
                 pass
 
     def _open_color_dialog(self):
@@ -571,12 +702,10 @@ class SettingsDialog(QDialog):
             self._select_preset_color(color.name(), self._btn_color_pick)
 
     def _on_font_size_changed(self, size: int):
-        try:
-            f = self._lbl_font_preview.font()
-            f.setPointSize(size)
-            self._lbl_font_preview.setFont(f)
-        except Exception:
-            pass
+        # Use stylesheet so the QSS engine can't override it
+        self._lbl_font_preview.setStyleSheet(
+            f"color:{get_color('tx0')}; font-size:{size}pt; font-family:'Segoe UI',sans-serif;"
+        )
 
     @staticmethod
     def _strategies_path() -> "Path":
@@ -872,10 +1001,13 @@ class SettingsDialog(QDialog):
         self._settings.max_conversation_history = self._spn_history.value()
         self._settings.max_file_chars = self._spn_file_chars.value()
         self._settings.max_log_chars = self._spn_log_chars.value()
+        self._settings.chat_timeout_seconds = self._spn_chat_timeout.value()
+        self._settings.chat_retry_count = self._spn_chat_retry.value()
         # Appearance
         self._settings.accent_color = getattr(self, "_accent_color",
                                                self._settings.accent_color)
         self._settings.ui_font_size = self._spn_ui_font.value()
+        self._settings.theme = self._cmb_theme.currentData() or "dark"
         self._settings.language = self._cmb_lang.currentData()
         self.settings_saved.emit(self._settings)
         self.accept()

@@ -562,8 +562,9 @@ def main():
         accent    = getattr(saved, "accent_color", "#7AA2F7")
         font_size = getattr(saved, "ui_font_size", 11)
         language  = getattr(saved, "language", "ru")
+        theme     = getattr(saved, "theme", "dark")
     except Exception:
-        accent = "#7AA2F7"; font_size = 11; language = "ru"
+        accent = "#7AA2F7"; font_size = 11; language = "ru"; theme = "dark"
 
     # ── Apply global font ────────────────────────────────────
     base_font = QFont()
@@ -574,7 +575,7 @@ def main():
     # ── Register ThemeManager ────────────────────────────────
     from ui.theme_manager import set_app, apply_theme, apply_font
     set_app(app)
-    apply_theme(accent, font_size)
+    apply_theme(accent, font_size, theme)
 
     # ── Set language ─────────────────────────────────────────
     from ui.i18n import set_language
@@ -596,9 +597,10 @@ def main():
     def _on_settings_changed(s):
         new_accent = getattr(s, "accent_color", "#7AA2F7")
         new_size   = getattr(s, "ui_font_size", 11)
+        new_theme  = getattr(s, "theme", "dark")
         new_lang   = getattr(s, "language", "ru")
         apply_font(new_size)
-        apply_theme(new_accent, new_size)
+        apply_theme(new_accent, new_size, new_theme)
         app.setWindowIcon(_make_app_icon(new_accent))
         _apply_dark_titlebar(window)
         _apply_accent_caption(window, new_accent)
@@ -606,6 +608,12 @@ def main():
         from ui.i18n import set_language, retranslate_widget
         set_language(new_lang)
         retranslate_widget(window)
+        # Deferred second repaint — ensures scroll areas and chat bubbles repaint
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(80, lambda: [
+            w.update() for w in app.allWidgets() if w.isVisible()
+        ])
+        QTimer.singleShot(150, window.repaint)
 
     try:
         window.settings_changed.connect(_on_settings_changed)
