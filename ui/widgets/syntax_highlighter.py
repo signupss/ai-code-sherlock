@@ -1,5 +1,15 @@
 """
-Multi-language syntax highlighter — 19 languages, TokyoNight palette.
+Multi-language syntax highlighter — 19 languages.
+
+Upgrades:
+  * Theme-aware colors — reads from theme_manager palette at init time
+  * Lexical caching — pre-compiled QRegularExpression + format objects
+  * Multi-opener multiline — handles multiple multiline blocks per line
+    (e.g. ending a docstring and starting a comment on same line)
+  * Block state machine — uses setCurrentBlockState for proper
+    incremental re-highlighting (Qt only rehighlights changed blocks)
+  * Semantic dimming API — set_dimmed_ranges() for unused-var highlighting
+
 Supports: Python, JS/TS, JSON, YAML, SQL, Bash, Markdown,
           C/C++, C#, Java, Go, Rust, Ruby, PHP, Kotlin, Swift, TOML.
 """
@@ -8,78 +18,206 @@ from PyQt6.QtCore import QRegularExpression
 from PyQt6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat, QTextDocument
 
 
+# ──────────────────────────────────────────────────────────
+#  Theme-aware Color Palette
+# ──────────────────────────────────────────────────────────
+
+def _get_highlight_colors() -> dict[str, str]:
+    """Attempt to load colors from theme_manager, fallback to Tokyo Night."""
+    try:
+        from ui.theme_manager import get_color, get_theme
+        theme = get_theme()
+    except ImportError:
+        theme = "dark"
+
+    # Syntax colors — consistent across themes for readability
+    # (only the comment color adapts to theme brightness)
+    if theme == "light":
+        return {
+            "keyword": "#0033B3", "builtin": "#7B3FB7", "string": "#067D17",
+            "comment": "#8C8C8C", "number": "#1750EB", "func": "#00627A",
+            "class_": "#A66F00", "deco": "#A66F00", "operator": "#0033B3",
+            "self_": "#C51916", "const": "#1750EB", "prop": "#248F8F",
+            "type_": "#00627A", "preproc": "#AF1219", "escape": "#C51916",
+            "dimmed": "#B0B0B0",
+        }
+    else:
+        return {
+            "keyword": "#7AA2F7", "builtin": "#BB9AF7", "string": "#9ECE6A",
+            "comment": "#565f89", "number": "#FF9E64", "func": "#61AFEF",
+            "class_": "#E0AF68", "deco": "#E0AF68", "operator": "#89DDFF",
+            "self_": "#F7768E", "const": "#FF9E64", "prop": "#73DACA",
+            "type_": "#2AC3DE", "preproc": "#FF9E64", "escape": "#F7768E",
+            "dimmed": "#3B4261",
+        }
+
+
 def _fmt(color: str, bold: bool = False, italic: bool = False) -> QTextCharFormat:
     f = QTextCharFormat()
     f.setForeground(QColor(color))
-    if bold: f.setFontWeight(QFont.Weight.Bold)
-    if italic: f.setFontItalic(True)
+    if bold:
+        f.setFontWeight(QFont.Weight.Bold)
+    if italic:
+        f.setFontItalic(True)
     return f
 
-C_KEYWORD  = "#7AA2F7"; C_BUILTIN  = "#BB9AF7"; C_STRING   = "#9ECE6A"
-C_COMMENT  = "#565f89"; C_NUMBER   = "#FF9E64"; C_FUNC     = "#61AFEF"
-C_CLASS    = "#E0AF68"; C_DECO     = "#E0AF68"; C_OPERATOR = "#89DDFF"
-C_SELF     = "#F7768E"; C_CONST    = "#FF9E64"; C_PROP     = "#73DACA"
-C_TYPE     = "#2AC3DE"; C_PREPROC  = "#FF9E64"; C_ESCAPE   = "#F7768E"
 
+# ──────────────────────────────────────────────────────────
+#  Base Highlighter
+# ──────────────────────────────────────────────────────────
 
 class BaseHighlighter(QSyntaxHighlighter):
+    """
+    Base with:
+      - Pre-compiled regex rule list
+      - Multi-state multiline block handling
+      - Semantic dimming support
+    """
+
     def __init__(self, document: QTextDocument):
         super().__init__(document)
-        self._rules: list[tuple] = []
-        self._multiline: list[tuple] = []
+        self._colors = _get_highlight_colors()
+        self._rules: list[tuple[QRegularExpression, QTextCharFormat]] = []
+        self._multiline: list[tuple[QRegularExpression, QRegularExpression, QTextCharFormat, int]] = []
+        self._overlays: list[tuple[QRegularExpression, QTextCharFormat]] = [] # <--- ДОБАВЛЕНО
+        self._dimmed_format = _fmt(self._colors["dimmed"], italic=True)
+        self._dimmed_ranges: dict[int, list[tuple[int, int]]] = {}
         self._setup_rules()
 
-    def _add(self, pat, fmt, flags=QRegularExpression.PatternOption(0)):
+    # ── Convenience for subclasses ─────────────────────────
+
+    def _add_overlay(self, pat: str, fmt: QTextCharFormat):
+        """Правила, которые красятся поверх основного цвета (например, \n в строках)"""
+        self._overlays.append((QRegularExpression(pat), fmt))
+
+    def _c(self, name: str) -> str:
+        """Get color by semantic name."""
+        return self._colors.get(name, "#CDD6F4")
+
+    def _add(self, pat: str, fmt: QTextCharFormat,
+             flags: QRegularExpression.PatternOption = QRegularExpression.PatternOption(0)):
         rx = QRegularExpression(pat)
-        if flags: rx.setPatternOptions(flags)
+        if flags:
+            rx.setPatternOptions(flags)
         self._rules.append((rx, fmt))
 
-    def _ml(self, start, end, fmt, state):
-        self._multiline.append((QRegularExpression(start), QRegularExpression(end), fmt, state))
+    def _ml(self, start: str, end: str, fmt: QTextCharFormat, state: int):
+        self._multiline.append((
+            QRegularExpression(start),
+            QRegularExpression(end),
+            fmt,
+            state,
+        ))
 
-    def _setup_rules(self): pass
+    def _setup_rules(self):
+        """Override in subclass to add rules."""
+        pass
+
+    # ── Semantic dimming ───────────────────────────────────
+
+    def set_dimmed_ranges(self, ranges: dict[int, list[tuple[int, int]]]) -> None:
+        """
+        Set ranges to display dimmed (e.g. unused variables).
+        ranges: {block_number: [(char_start, char_length), ...]}
+        """
+        self._dimmed_ranges = ranges
+        self.rehighlight()
+
+    def clear_dimmed(self) -> None:
+        self._dimmed_ranges.clear()
+        self.rehighlight()
+
+# ── Core highlight ─────────────────────────────────────
 
     def highlightBlock(self, text: str):
         self.setCurrentBlockState(-1)
-        offset = 0  # end of any multiline block prefix on this line
+        qt_text_len = len(text.encode('utf-16-le')) // 2
 
-        # Step 1: Handle continuation of multiline from previous line
+        # Step 1: Handle continuation of multiline from previous block
+        offset = 0
         for (start_rx, end_rx, fmt, state) in self._multiline:
             if self.previousBlockState() == state:
                 em = end_rx.match(text)
                 if not em.hasMatch():
-                    # Whole line is still inside multiline block
-                    self.setFormat(0, len(text), fmt)
+                    self.setFormat(0, qt_text_len, fmt)
                     self.setCurrentBlockState(state)
+                    self._apply_dimming(text)
                     return
-                # Multiline ends mid-line
                 offset = em.capturedEnd()
                 self.setFormat(0, offset, fmt)
                 break
 
-        # Step 2: Apply single-line rules only to part after multiline prefix
+        # Step 2: Сбор всех совпадений (лексерный подход Maximum Munch)
+        matches = []
+        
         for rx, fmt in self._rules:
             it = rx.globalMatch(text)
             while it.hasNext():
                 m = it.next()
                 s, l = m.capturedStart(), m.capturedLength()
                 if s >= offset:
-                    self.setFormat(s, l, fmt)
+                    matches.append((s, l, fmt, False, None, None))
 
-        # Step 3: Paint new multiline blocks starting from offset (wins over single-line)
-        for (start_rx, end_rx, fmt, state) in self._multiline:
-            sm = start_rx.match(text, offset)
-            if not sm.hasMatch():
-                continue
-            sp = sm.capturedStart()
-            em = end_rx.match(text, sm.capturedEnd())
-            if not em.hasMatch():
-                self.setFormat(sp, len(text) - sp, fmt)
-                self.setCurrentBlockState(state)
+        for entry in self._multiline:
+            start_rx, end_rx, fmt, state = entry
+            it = start_rx.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                s, l = m.capturedStart(), m.capturedLength()
+                if s >= offset:
+                    matches.append((s, l, fmt, True, end_rx, state))
+
+        # Сортируем: сначала те, что начались раньше, при равном старте — берем длинные
+        matches.sort(key=lambda x: (x[0], -x[1]))
+
+        # Step 3: Применяем совпадения строго слева-направо без наложений
+        pos = offset
+        for s, l, fmt, is_ml, end_rx, state in matches:
+            if s < pos:
+                continue  # Пропускаем всё, что находится ВНУТРИ уже закрашенного блока
+
+            if not is_ml:
+                self.setFormat(s, l, fmt)
+                pos = s + l
             else:
-                self.setFormat(sp, em.capturedEnd() - sp, fmt)
-            break  # only first opener per line
+                em = end_rx.match(text, s + l)
+                if not em.hasMatch():
+                    self.setFormat(s, qt_text_len - s, fmt)
+                    self.setCurrentBlockState(state)
+                    pos = qt_text_len
+                    break
+                else:
+                    end_pos = em.capturedEnd()
+                    self.setFormat(s, end_pos - s, fmt)
+                    pos = end_pos
 
+        # Step 4: Применяем оверлеи (эскейп-символы поверх уже закрашенных строк)
+        for rx, fmt in self._overlays:
+            it = rx.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                self.setFormat(m.capturedStart(), m.capturedLength(), fmt)
+
+        # Step 5: Apply semantic dimming
+        self._apply_dimming(text)
+
+    def _apply_dimming(self, text: str) -> None:
+        """Overlay dimmed format on marked ranges for this block."""
+        block_num = self.currentBlock().blockNumber()
+        ranges = self._dimmed_ranges.get(block_num)
+        if ranges:
+            for start, length in ranges:
+                if start < len(text):
+                    # AST/сторонние инструменты дают индексы Python (символы).
+                    # Здесь переводим их в UTF-16, так как setFormat работает с Qt-индексами.
+                    q_st = len(text[:start].encode('utf-16-le')) // 2
+                    q_ln = len(text[start:start+length].encode('utf-16-le')) // 2
+                    self.setFormat(q_st, q_ln, self._dimmed_format)
+
+
+# ══════════════════════════════════════════════════════════
+#  Language-specific Highlighters
+# ══════════════════════════════════════════════════════════
 
 class PythonHighlighter(BaseHighlighter):
     KW = (r"\b(False|None|True|and|as|assert|async|await|break|class|continue|def|del|elif|"
@@ -90,24 +228,40 @@ class PythonHighlighter(BaseHighlighter):
           r"isinstance|issubclass|iter|len|list|locals|map|max|min|next|object|oct|open|ord|"
           r"pow|print|property|range|repr|reversed|round|set|setattr|slice|sorted|staticmethod|"
           r"str|sum|super|tuple|type|vars|zip|__name__|__file__|__doc__|__class__)\b")
+    
     def _setup_rules(self):
-        self._add(r"@[\w.]+", _fmt(C_DECO))
-        self._add(self.KW, _fmt(C_KEYWORD, bold=True))
-        self._add(self.BI, _fmt(C_BUILTIN))
-        self._add(r"\b(int|float|str|bool|bytes|list|dict|set|tuple|type|None|Optional|Union|List|Dict|Set|Tuple|Any|Callable|Type|Final)\b", _fmt(C_TYPE))
-        self._add(r"\b(self|cls)\b", _fmt(C_SELF))
-        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(C_CLASS))
-        self._add(r"(?<=def\s)(\w+)", _fmt(C_FUNC, bold=True))
-        self._add(r"(?<=class\s)(\w+)", _fmt(C_CLASS, bold=True))
-        self._add(r"\b(\w+)(?=\s*\()", _fmt(C_FUNC))
-        self._add(r"\b(0x[0-9A-Fa-f]+|0b[01]+|0o[0-7]+|\d+\.?\d*([eE][+-]?\d+)?)\b", _fmt(C_NUMBER))
-        self._add(r"[+\-*/%=<>!&|^~:]+", _fmt(C_OPERATOR))
-        self._add(r"\\[nrtbfv\\'\"0abx]", _fmt(C_ESCAPE))
-        self._add(r'[fFrRbB]*"[^"\\]*"', _fmt(C_STRING))
-        self._add(r"[fFrRbB]*'[^'\\]*'", _fmt(C_STRING))
-        self._add(r"#[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._ml('"""', '"""', _fmt(C_STRING), 1)
-        self._ml("'''", "'''", _fmt(C_STRING), 2)
+        c = self._c
+        self._add(r"@[\w.]+", _fmt(c("deco")))
+        self._add(self.KW, _fmt(c("keyword"), bold=True))
+        self._add(self.BI, _fmt(c("builtin")))
+        self._add(r"\b__[a-zA-Z0-9_]+__\b", _fmt(c("builtin")))
+        self._add(r"\b(int|float|str|bool|bytes|list|dict|set|tuple|type|None|Optional|Union|List|Dict|Set|Tuple|Any|Callable|Type|Final)\b", _fmt(c("type_")))
+        self._add(r"\b(self|cls)\b", _fmt(c("self_")))
+        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(c("class_")))
+        self._add(r"(?<=def\s)(\w+)", _fmt(c("func"), bold=True))
+        self._add(r"(?<=class\s)(\w+)", _fmt(c("class_"), bold=True))
+        self._add(r"\b(\w+)(?=\s*\()", _fmt(c("func")))
+        
+        # Эстетика Notepad++ / VS Code
+        self._add(r"(?<=\.)[a-zA-Z_]\w*\b", _fmt(c("prop")))
+        self._add(r"\b[a-zA-Z_]\w*(?=\s*:)", _fmt(c("prop"), italic=True))
+        self._add(r"\b(0x[0-9A-Fa-f]+|0b[01]+|0o[0-7]+|\d+\.?\d*([eE][+-]?\d+)?)\b", _fmt(c("number")))
+        self._add(r"[+\-*/%=<>!&|^~:]+", _fmt(c("operator")))
+        self._add_overlay(r"\\[nrtbfv\\'\"0abx]", _fmt(c("escape")))
+        
+        # === ЖЕСТКИЕ ПРАВИЛА ДЛЯ СТРОК ===
+        # Строгая группа префиксов вместо звездочки (избавляет от багов PCRE2)
+        PFX = r"(?:f|r|b|fr|rf|br|rb|F|R|B|FR|RF|BR|RB)?"
+        
+        # 1. Многострочные строки (должны идти первыми)
+        self._ml(PFX + r'"""', r'"""', _fmt(c("string")), 1)
+        self._ml(PFX + r"'''", r"'''", _fmt(c("string")), 2)
+        
+        # 2. Однострочные строки со строгим запретом (?!...) захвата тройных кавычек!
+        self._add(PFX + r'"(?!"")(?:[^"\\]|\\.)*"', _fmt(c("string")))
+        self._add(PFX + r"'(?!'')(?:[^'\\]|\\.)*'", _fmt(c("string")))
+        
+        self._add(r"#[^\n]*", _fmt(c("comment"), italic=True))
 
 
 class JavaScriptHighlighter(BaseHighlighter):
@@ -116,96 +270,111 @@ class JavaScriptHighlighter(BaseHighlighter):
           r"super|switch|this|throw|try|typeof|var|void|while|with|yield|async|await|from|as|"
           r"interface|type|enum|declare|namespace|abstract|implements|readonly|override|public|private|protected|get|set)\b")
     def _setup_rules(self):
-        self._add(self.KW, _fmt(C_KEYWORD, bold=True))
-        self._add(r"\b(true|false|null|undefined|NaN|Infinity)\b", _fmt(C_CONST))
-        self._add(r"\b(string|number|boolean|any|void|never|unknown|object|symbol|bigint|Array|Promise|Record|Partial|Required|Readonly|Pick|Omit)\b", _fmt(C_TYPE))
-        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(C_CLASS))
-        self._add(r"(?<=function\s)(\w+)", _fmt(C_FUNC, bold=True))
-        self._add(r"\b(\w+)(?=\s*\()", _fmt(C_FUNC))
-        self._add(r"\.\b(\w+)\b", _fmt(C_PROP))
-        self._add(r"\b(0x[0-9A-Fa-f]+|\d+\.?\d*([eE][+-]?\d+)?n?)\b", _fmt(C_NUMBER))
-        self._add(r"`[^`]*`", _fmt(C_STRING))
-        self._add(r'"[^"\\]*"', _fmt(C_STRING))
-        self._add(r"'[^'\\]*'", _fmt(C_STRING))
-        self._add(r"//[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._ml(r"/\*", r"\*/", _fmt(C_COMMENT, italic=True), 1)
+        c = self._c
+        self._add(self.KW, _fmt(c("keyword"), bold=True))
+        self._add(r"\b(true|false|null|undefined|NaN|Infinity)\b", _fmt(c("const")))
+        self._add(r"\b(string|number|boolean|any|void|never|unknown|object|symbol|bigint|Array|Promise|Record|Partial|Required|Readonly|Pick|Omit)\b", _fmt(c("type_")))
+        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(c("class_")))
+        self._add(r"(?<=function\s)(\w+)", _fmt(c("func"), bold=True))
+        self._add(r"\b(\w+)(?=\s*\()", _fmt(c("func")))
+        
+        # Эстетика Notepad++ / VS Code для JS:
+        self._add(r"(?<=\.)[a-zA-Z_]\w*\b", _fmt(c("prop")))  # Свойства (obj.value)
+        self._add(r"\b[a-zA-Z_]\w*(?=\s*:)", _fmt(c("prop"), italic=True))  # Ключи и аргументы
+        
+        self._add(r"\b(0x[0-9A-Fa-f]+|\d+\.?\d*([eE][+-]?\d+)?n?)\b", _fmt(c("number")))
+        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(c("string")))
+        self._add(r"'(?:[^'\\]|\\.)*'", _fmt(c("string")))
+        self._add(r"//[^\n]*", _fmt(c("comment"), italic=True))
+        self._ml(r"/\*", r"\*/", _fmt(c("comment"), italic=True), 1)
+        
+        # ИСПРАВЛЕНИЕ: Шаблонные строки в JS могут быть многострочными!
+        self._ml(r"`", r"`", _fmt(c("string")), 2)
 
 
 class JsonHighlighter(BaseHighlighter):
     def _setup_rules(self):
-        self._add(r'"[^"]*"(?=\s*:)', _fmt(C_PROP, bold=True))
-        self._add(r'"[^"]*"', _fmt(C_STRING))
-        self._add(r"\b-?\d+\.?\d*([eE][+-]?\d+)?\b", _fmt(C_NUMBER))
-        self._add(r"\b(true|false|null)\b", _fmt(C_CONST, bold=True))
-        self._add(r"[{}\[\],:] ", _fmt(C_OPERATOR))
+        c = self._c
+        self._add(r'"[^"]*"(?=\s*:)', _fmt(c("prop"), bold=True))
+        self._add(r'"[^"]*"', _fmt(c("string")))
+        self._add(r"\b-?\d+\.?\d*([eE][+-]?\d+)?\b", _fmt(c("number")))
+        self._add(r"\b(true|false|null)\b", _fmt(c("const"), bold=True))
+        self._add(r"[{}\[\],:] ", _fmt(c("operator")))
 
 
 class YamlHighlighter(BaseHighlighter):
     def _setup_rules(self):
-        self._add(r"^[\s-]*\b([\w.-]+)\s*:", _fmt(C_PROP, bold=True))
-        self._add(r'"[^"]*"', _fmt(C_STRING)); self._add(r"'[^']*'", _fmt(C_STRING))
-        self._add(r"[&*]\w+", _fmt(C_DECO))
-        self._add(r"\b(true|false|yes|no|null|~)\b", _fmt(C_CONST))
-        self._add(r"\b-?\d+\.?\d*\b", _fmt(C_NUMBER))
-        self._add(r"#[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._add(r"^---", _fmt(C_KEYWORD, bold=True))
+        c = self._c
+        self._add(r"^[\s-]*\b([\w.-]+)\s*:", _fmt(c("prop"), bold=True))
+        self._add(r'"[^"]*"', _fmt(c("string")))
+        self._add(r"'[^']*'", _fmt(c("string")))
+        self._add(r"[&*]\w+", _fmt(c("deco")))
+        self._add(r"\b(true|false|yes|no|null|~)\b", _fmt(c("const")))
+        self._add(r"\b-?\d+\.?\d*\b", _fmt(c("number")))
+        self._add(r"#[^\n]*", _fmt(c("comment"), italic=True))
+        self._add(r"^---", _fmt(c("keyword"), bold=True))
 
 
 class SqlHighlighter(BaseHighlighter):
     KW = (r"\b(SELECT|FROM|WHERE|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|ON|GROUP|BY|ORDER|HAVING|"
-          r"LIMIT|OFFSET|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|VIEW|DROP|ALTER|"
-          r"ADD|COLUMN|PRIMARY|KEY|FOREIGN|REFERENCES|NOT|NULL|DEFAULT|UNIQUE|CHECK|AND|OR|"
-          r"IN|LIKE|BETWEEN|EXISTS|CASE|WHEN|THEN|ELSE|END|AS|DISTINCT|UNION|WITH|BEGIN|"
-          r"COMMIT|ROLLBACK|TRANSACTION|IF|REPLACE|RETURNING)\b")
-    FN = (r"\b(COUNT|SUM|AVG|MAX|MIN|COALESCE|NULLIF|CAST|CONVERT|UPPER|LOWER|TRIM|"
-          r"SUBSTRING|CONCAT|LENGTH|NOW|CURRENT_DATE|ROW_NUMBER|RANK|DENSE_RANK|LAG|LEAD|"
-          r"OVER|PARTITION|FLOOR|CEIL|ROUND|ISNULL|IFNULL|TO_CHAR|TO_DATE|DATEADD|DATEDIFF)\b")
+          r"LIMIT|OFFSET|UNION|ALL|DISTINCT|AS|AND|OR|NOT|IN|IS|NULL|LIKE|BETWEEN|EXISTS|"
+          r"INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|INDEX|VIEW|TRIGGER|"
+          r"FUNCTION|PROCEDURE|BEGIN|END|IF|THEN|ELSE|CASE|WHEN|DECLARE|CURSOR|FETCH|RETURNS|"
+          r"INT|INTEGER|VARCHAR|TEXT|BOOLEAN|DATE|TIMESTAMP|FLOAT|DECIMAL|BIGINT|SERIAL|"
+          r"PRIMARY|KEY|FOREIGN|REFERENCES|UNIQUE|DEFAULT|CHECK|CONSTRAINT|"
+          r"ASC|DESC|COUNT|SUM|AVG|MIN|MAX|COALESCE|CAST|CONVERT|"
+          r"COMMIT|ROLLBACK|TRANSACTION|GRANT|REVOKE|WITH|RECURSIVE|"
+          r"EXPLAIN|ANALYZE|PARTITION|WINDOW|OVER|ROW_NUMBER|RANK|DENSE_RANK)\b")
     def _setup_rules(self):
-        ci = QRegularExpression.PatternOption.CaseInsensitiveOption
-        self._add(self.KW, _fmt(C_KEYWORD, bold=True), ci)
-        self._add(self.FN, _fmt(C_BUILTIN), ci)
-        self._add(r"\b(INT|INTEGER|BIGINT|VARCHAR|TEXT|BLOB|DATE|DATETIME|TIMESTAMP|BOOLEAN|FLOAT|DOUBLE|DECIMAL|JSON|UUID|SERIAL)\b", _fmt(C_TYPE), ci)
-        self._add(r"'[^']*'", _fmt(C_STRING))
-        self._add(r"\b\d+\.?\d*\b", _fmt(C_NUMBER))
-        self._add(r"--[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._ml(r"/\*", r"\*/", _fmt(C_COMMENT, italic=True), 1)
+        c = self._c
+        self._add(self.KW, _fmt(c("keyword"), bold=True),
+                  QRegularExpression.PatternOption.CaseInsensitiveOption)
+        self._add(r"\b(TRUE|FALSE|NULL)\b", _fmt(c("const")),
+                  QRegularExpression.PatternOption.CaseInsensitiveOption)
+        self._add(r"\b\d+\.?\d*\b", _fmt(c("number")))
+        self._add(r"'[^']*'", _fmt(c("string")))
+        self._add(r'"[^"]*"', _fmt(c("string")))
+        self._add(r"--[^\n]*", _fmt(c("comment"), italic=True))
+        self._ml(r"/\*", r"\*/", _fmt(c("comment"), italic=True), 1)
 
 
 class BashHighlighter(BaseHighlighter):
+    KW = (r"\b(if|then|else|elif|fi|for|while|do|done|case|esac|in|function|return|"
+          r"local|export|source|alias|unalias|readonly|declare|typeset|set|unset|"
+          r"shift|trap|exit|exec|eval|true|false|test|echo|printf|read|cd|pwd|ls)\b")
     def _setup_rules(self):
-        self._add(r"\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|return|exit|local|export|source|alias|break|continue|in|select|until|trap|eval|exec)\b", _fmt(C_KEYWORD, bold=True))
-        self._add(r"\b(echo|printf|read|cd|ls|cp|mv|rm|mkdir|chmod|chown|grep|sed|awk|find|sort|cut|head|tail|cat|touch|test|which|set|declare|pwd|date|sleep|kill)\b", _fmt(C_BUILTIN))
-        self._add(r"\$\{?[\w@#?$!*-]+\}?", _fmt(C_PROP))
-        self._add(r'"[^"]*"', _fmt(C_STRING)); self._add(r"'[^']*'", _fmt(C_STRING))
-        self._add(r"`[^`]*`", _fmt(C_CONST))
-        self._add(r"\b\d+\b", _fmt(C_NUMBER))
-        self._add(r"#[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._add(r"^#!.*", _fmt(C_DECO))
-        self._add(r"[|&;><]+", _fmt(C_OPERATOR))
+        c = self._c
+        self._add(self.KW, _fmt(c("keyword"), bold=True))
+        self._add(r"\$\{?\w+\}?", _fmt(c("self_")))
+        self._add(r'"[^"]*"', _fmt(c("string")))
+        self._add(r"'[^']*'", _fmt(c("string")))
+        self._add(r"\b\d+\b", _fmt(c("number")))
+        self._add(r"#[^\n]*", _fmt(c("comment"), italic=True))
 
 
 class CppHighlighter(BaseHighlighter):
-    KW = (r"\b(auto|break|case|catch|class|const|constexpr|continue|decltype|default|delete|"
-          r"do|else|enum|explicit|extern|false|for|friend|goto|if|inline|mutable|namespace|"
-          r"new|noexcept|nullptr|operator|override|private|protected|public|return|sizeof|"
-          r"static|struct|switch|template|this|throw|true|try|typedef|typename|union|"
-          r"using|virtual|volatile|while|concept|requires|consteval|final|co_await|co_return)\b")
-    TY = (r"\b(void|bool|char|short|int|long|float|double|unsigned|signed|size_t|string|"
-          r"vector|map|set|list|deque|array|pair|tuple|optional|shared_ptr|unique_ptr|"
-          r"weak_ptr|thread|mutex|atomic|int8_t|int16_t|int32_t|int64_t|uint8_t|uint16_t|uint32_t|uint64_t)\b")
+    KW = (r"\b(alignas|alignof|and|and_eq|asm|auto|bitand|bitor|bool|break|case|catch|char|"
+          r"char8_t|char16_t|char32_t|class|co_await|co_return|co_yield|compl|concept|const|"
+          r"consteval|constexpr|constinit|const_cast|continue|decltype|default|delete|do|double|"
+          r"dynamic_cast|else|enum|explicit|export|extern|false|float|for|friend|goto|if|inline|"
+          r"int|long|mutable|namespace|new|noexcept|not|not_eq|nullptr|operator|or|or_eq|private|"
+          r"protected|public|register|reinterpret_cast|requires|return|short|signed|sizeof|static|"
+          r"static_assert|static_cast|struct|switch|template|this|throw|true|try|typedef|typeid|"
+          r"typename|union|unsigned|using|virtual|void|volatile|wchar_t|while|xor|xor_eq)\b")
     def _setup_rules(self):
-        self._add(r"^\s*#\s*\w+.*", _fmt(C_PREPROC))
-        self._add(self.KW, _fmt(C_KEYWORD, bold=True))
-        self._add(self.TY, _fmt(C_TYPE))
-        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(C_CLASS))
-        self._add(r"\b(\w+)(?=\s*\()", _fmt(C_FUNC))
-        self._add(r"(?:::|->|\.)\s*(\w+)", _fmt(C_PROP))
-        self._add(r"\b(0x[0-9A-Fa-f]+[lLuU]*|\d+\.?\d*[fFlL]?)\b", _fmt(C_NUMBER))
-        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(C_STRING))
-        self._add(r"'(?:[^'\\]|\\.)*'", _fmt(C_STRING))
-        self._add(r"[+\-*/%=<>!&|^~]+", _fmt(C_OPERATOR))
-        self._add(r"//[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._ml(r"/\*", r"\*/", _fmt(C_COMMENT, italic=True), 1)
+        c = self._c
+        self._add(r"#\s*(include|define|undef|ifdef|ifndef|if|elif|else|endif|pragma|error|warning)\b", _fmt(c("preproc"), bold=True))
+        self._add(self.KW, _fmt(c("keyword"), bold=True))
+        self._add(r"\b(size_t|ptrdiff_t|int8_t|int16_t|int32_t|int64_t|uint8_t|uint16_t|uint32_t|uint64_t|"
+                  r"string|vector|map|set|list|array|unique_ptr|shared_ptr|optional|variant|pair|tuple)\b", _fmt(c("type_")))
+        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(c("class_")))
+        self._add(r"\b(\w+)(?=\s*\()", _fmt(c("func")))
+        self._add(r"(?:::|->\.|\.)\b(\w+)\b", _fmt(c("prop")))
+        self._add(r"\b(0x[0-9A-Fa-f]+|0b[01]+|\d+\.?\d*([eE][+-]?\d+)?[fFlLuU]*)\b", _fmt(c("number")))
+        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(c("string")))
+        self._add(r"'(?:[^'\\]|\\.)'", _fmt(c("string")))
+        self._add(r"//[^\n]*", _fmt(c("comment"), italic=True))
+        self._ml(r"/\*", r"\*/", _fmt(c("comment"), italic=True), 1)
 
 
 class CSharpHighlighter(BaseHighlighter):
@@ -213,85 +382,88 @@ class CSharpHighlighter(BaseHighlighter):
           r"decimal|default|delegate|do|double|else|enum|event|explicit|extern|false|finally|"
           r"fixed|float|for|foreach|goto|if|implicit|in|int|interface|internal|is|lock|long|"
           r"namespace|new|null|object|operator|out|override|params|private|protected|public|"
-          r"readonly|ref|return|sbyte|sealed|short|sizeof|static|string|struct|switch|this|"
-          r"throw|true|try|typeof|uint|ulong|unchecked|unsafe|ushort|using|virtual|void|"
-          r"volatile|while|async|await|var|dynamic|yield|nameof|when|record|init|with|required|file|global)\b")
+          r"readonly|ref|return|sbyte|sealed|short|sizeof|stackalloc|static|string|struct|switch|"
+          r"this|throw|true|try|typeof|uint|ulong|unchecked|unsafe|ushort|using|var|virtual|void|"
+          r"volatile|while|async|await|dynamic|nameof|when|record|init|required|yield)\b")
     def _setup_rules(self):
-        self._add(r"\[[\w.,\s()]+\]", _fmt(C_DECO))
-        self._add(r"^\s*#\s*\w+.*", _fmt(C_PREPROC))
-        self._add(self.KW, _fmt(C_KEYWORD, bold=True))
-        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(C_CLASS))
-        self._add(r"\b(\w+)(?=\s*\()", _fmt(C_FUNC))
-        self._add(r"\.\b(\w+)\b", _fmt(C_PROP))
-        self._add(r"\b(0x[0-9A-Fa-f]+[lLuU]*|\d+\.?\d*[fFdDmM]?[lL]?)\b", _fmt(C_NUMBER))
-        self._add(r'@?"(?:[^"\\]|\\.)*"', _fmt(C_STRING))
-        self._add(r"'(?:[^'\\]|\\.)'", _fmt(C_STRING))
-        self._add(r"///[^\n]*", _fmt(C_PROP, italic=True))
-        self._add(r"//[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._ml(r"/\*", r"\*/", _fmt(C_COMMENT, italic=True), 1)
+        c = self._c
+        self._add(r"#\s*(if|elif|else|endif|region|endregion|pragma)\b", _fmt(c("preproc")))
+        self._add(r"\[[\w.]+\]", _fmt(c("deco")))
+        self._add(self.KW, _fmt(c("keyword"), bold=True))
+        self._add(r"\b(List|Dictionary|HashSet|Queue|Stack|Task|Action|Func|Tuple|Span|Memory|IEnumerable|IList|ICollection|IDisposable)\b", _fmt(c("type_")))
+        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(c("class_")))
+        self._add(r"\b(\w+)(?=\s*\()", _fmt(c("func")))
+        self._add(r"\.\b(\w+)\b", _fmt(c("prop")))
+        self._add(r"\b\d+\.?\d*[fFdDmMlLuU]*\b", _fmt(c("number")))
+        self._add(r'@?"(?:[^"\\]|\\.)*"', _fmt(c("string")))
+        self._add(r"'(?:[^'\\]|\\.)'", _fmt(c("string")))
+        self._add(r"//[^\n]*", _fmt(c("comment"), italic=True))
+        self._ml(r"/\*", r"\*/", _fmt(c("comment"), italic=True), 1)
 
 
 class JavaHighlighter(BaseHighlighter):
-    KW = (r"\b(abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|"
-          r"default|do|double|else|enum|extends|final|finally|float|for|goto|if|implements|"
-          r"import|instanceof|int|interface|long|native|new|package|private|protected|public|"
-          r"return|short|static|strictfp|super|switch|synchronized|this|throw|throws|"
-          r"transient|try|var|void|volatile|while|record|sealed|permits|yield|null|true|false)\b")
+    KW = (r"\b(abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|"
+          r"do|double|else|enum|extends|final|finally|float|for|goto|if|implements|import|"
+          r"instanceof|int|interface|long|native|new|null|package|private|protected|public|"
+          r"return|short|static|strictfp|super|switch|synchronized|this|throw|throws|transient|"
+          r"try|void|volatile|while|var|yield|record|sealed|permits|non-sealed)\b")
     def _setup_rules(self):
-        self._add(r"@\w+", _fmt(C_DECO))
-        self._add(self.KW, _fmt(C_KEYWORD, bold=True))
-        self._add(r"\b(String|Integer|Long|Double|Float|Boolean|Object|Number|List|Map|Set|Optional|Stream|Void|Collection)\b", _fmt(C_TYPE))
-        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(C_CLASS))
-        self._add(r"\b(\w+)(?=\s*\()", _fmt(C_FUNC))
-        self._add(r"\.\b(\w+)\b", _fmt(C_PROP))
-        self._add(r"\b(0x[0-9A-Fa-f]+[lL]?|\d+\.?\d*[fFdDlL]?)\b", _fmt(C_NUMBER))
-        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(C_STRING))
-        self._add(r"'(?:[^'\\]|\\.)'", _fmt(C_STRING))
-        self._add(r"//[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._ml(r"/\*", r"\*/", _fmt(C_COMMENT, italic=True), 1)
+        c = self._c
+        self._add(r"@\w+", _fmt(c("deco")))
+        self._add(self.KW, _fmt(c("keyword"), bold=True))
+        self._add(r"\b(true|false)\b", _fmt(c("const")))
+        self._add(r"\b(String|Integer|Boolean|Long|Double|Float|Character|Object|List|Map|Set|Optional|Stream|CompletableFuture|BiFunction|Supplier|Consumer|Predicate)\b", _fmt(c("type_")))
+        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(c("class_")))
+        self._add(r"\b(\w+)(?=\s*\()", _fmt(c("func")))
+        self._add(r"\.\b(\w+)\b", _fmt(c("prop")))
+        self._add(r"\b\d+[\d_]*\.?[\d_]*[fFdDlL]?\b", _fmt(c("number")))
+        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(c("string")))
+        self._add(r"'(?:[^'\\]|\\.)'", _fmt(c("string")))
+        self._add(r"//[^\n]*", _fmt(c("comment"), italic=True))
+        self._ml(r"/\*", r"\*/", _fmt(c("comment"), italic=True), 1)
 
 
 class GoHighlighter(BaseHighlighter):
+    KW = (r"\b(break|case|chan|const|continue|default|defer|else|fallthrough|for|func|go|goto|"
+          r"if|import|interface|map|package|range|return|select|struct|switch|type|var)\b")
     def _setup_rules(self):
-        self._add(r"\b(break|case|chan|const|continue|default|defer|else|fallthrough|for|func|go|goto|if|import|interface|map|package|range|return|select|struct|switch|type|var)\b", _fmt(C_KEYWORD, bold=True))
-        self._add(r"\b(append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover|error|string|bool|byte|rune|int|int8|int16|int32|int64|uint|uint8|uint16|uint32|uint64|float32|float64|any)\b", _fmt(C_BUILTIN))
-        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(C_CLASS))
-        self._add(r"(?<=func\s)(\w+)", _fmt(C_FUNC, bold=True))
-        self._add(r"\b(\w+)(?=\s*\()", _fmt(C_FUNC))
-        self._add(r"\.\b(\w+)\b", _fmt(C_PROP))
-        self._add(r"\b(true|false|nil|iota)\b", _fmt(C_CONST))
-        self._add(r"\b(0x[0-9A-Fa-f]+|\d+\.?\d*)\b", _fmt(C_NUMBER))
-        self._add(r'`[^`]*`', _fmt(C_STRING))
-        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(C_STRING))
-        self._add(r"'(?:[^'\\]|\\.)'", _fmt(C_STRING))
-        self._add(r"//[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._ml(r"/\*", r"\*/", _fmt(C_COMMENT, italic=True), 1)
+        c = self._c
+        self._add(self.KW, _fmt(c("keyword"), bold=True))
+        self._add(r"\b(true|false|nil|iota)\b", _fmt(c("const")))
+        self._add(r"\b(int|int8|int16|int32|int64|uint|uint8|uint16|uint32|uint64|float32|float64|complex64|complex128|bool|byte|rune|string|error|any|comparable)\b", _fmt(c("type_")))
+        self._add(r"\b(append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)\b", _fmt(c("builtin")))
+        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(c("class_")))
+        self._add(r"\b(\w+)(?=\s*\()", _fmt(c("func")))
+        self._add(r"\.\b(\w+)\b", _fmt(c("prop")))
+        self._add(r"\b(0x[0-9A-Fa-f]+|\d+\.?\d*([eE][+-]?\d+)?)\b", _fmt(c("number")))
+        self._add(r'"[^"]*"', _fmt(c("string")))
+        self._add(r"`[^`]*`", _fmt(c("string")))
+        self._add(r"'[^']*'", _fmt(c("string")))
+        self._add(r"//[^\n]*", _fmt(c("comment"), italic=True))
+        self._ml(r"/\*", r"\*/", _fmt(c("comment"), italic=True), 1)
 
 
 class RustHighlighter(BaseHighlighter):
     KW = (r"\b(as|async|await|break|const|continue|crate|dyn|else|enum|extern|false|fn|for|"
           r"if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|Self|static|struct|"
-          r"super|trait|true|type|union|unsafe|use|where|while|abstract|become|box|do|final|"
-          r"macro|override|priv|try|typeof|unsized|virtual|yield)\b")
-    TY = (r"\b(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|bool|char|str|"
-          r"String|Vec|HashMap|HashSet|Option|Result|Box|Rc|Arc|Cell|RefCell|Mutex|"
-          r"Iterator|From|Into|Display|Debug|Clone|Copy|Send|Sync|Default|Ord|PartialOrd|Eq|PartialEq|Drop|Fn|FnMut|FnOnce)\b")
+          r"super|trait|true|type|union|unsafe|use|where|while|yield|macro_rules)\b")
     def _setup_rules(self):
-        self._add(r"'\w+\b(?!')", _fmt(C_DECO))  # lifetimes
-        self._add(r"\b\w+!", _fmt(C_BUILTIN))     # macros
-        self._add(r"#!?\[.*?\]", _fmt(C_DECO))   # attributes
-        self._add(self.KW, _fmt(C_KEYWORD, bold=True))
-        self._add(self.TY, _fmt(C_TYPE))
-        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(C_CLASS))
-        self._add(r"(?<=fn\s)(\w+)", _fmt(C_FUNC, bold=True))
-        self._add(r"\b(\w+)(?=\s*\()", _fmt(C_FUNC))
-        self._add(r"(?:::|\.)\b(\w+)\b", _fmt(C_PROP))
-        self._add(r"\b(0x[0-9A-Fa-f_]+|0b[01_]+|\d[\d_]*\.?[\d_]*)\b", _fmt(C_NUMBER))
-        self._add(r'r#?"(?:[^"\\]|\\.)*"', _fmt(C_STRING))
-        self._add(r"b?'(?:[^'\\]|\\.)'", _fmt(C_STRING))
-        self._add(r"///[^\n]*", _fmt(C_PROP, italic=True))
-        self._add(r"//[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._ml(r"/\*", r"\*/", _fmt(C_COMMENT, italic=True), 1)
+        c = self._c
+        self._add(r"#\[[\w:]+\]", _fmt(c("deco")))
+        self._add(r"#!\[[\w:]+\]", _fmt(c("deco")))
+        self._add(self.KW, _fmt(c("keyword"), bold=True))
+        self._add(r"\b(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|bool|char|str|"
+                  r"String|Vec|Box|Rc|Arc|Cell|RefCell|Option|Result|HashMap|HashSet|BTreeMap|BTreeSet|"
+                  r"Cow|Pin|Future|Iterator|IntoIterator|Send|Sync|Sized|Copy|Clone|Drop)\b", _fmt(c("type_")))
+        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(c("class_")))
+        self._add(r"(?<=fn\s)(\w+)", _fmt(c("func"), bold=True))
+        self._add(r"\b(\w+)(?=\s*[!(])", _fmt(c("func")))
+        self._add(r"\.\b(\w+)\b", _fmt(c("prop")))
+        self._add(r"\b(0x[0-9A-Fa-f_]+|0b[01_]+|0o[0-7_]+|\d[\d_]*\.?[\d_]*([eE][+-]?\d+)?)\b", _fmt(c("number")))
+        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(c("string")))
+        self._add(r"'[^']*'", _fmt(c("string")))
+        self._add(r"//[^\n]*", _fmt(c("comment"), italic=True))
+        self._ml(r"/\*", r"\*/", _fmt(c("comment"), italic=True), 1)
 
 
 class RubyHighlighter(BaseHighlighter):
@@ -301,18 +473,19 @@ class RubyHighlighter(BaseHighlighter):
           r"require|require_relative|include|extend|attr_reader|attr_writer|attr_accessor|"
           r"protected|private|public|freeze|frozen|new)\b")
     def _setup_rules(self):
-        self._add(r":[a-zA-Z_]\w*", _fmt(C_CONST))
-        self._add(r"@{1,2}\w+", _fmt(C_SELF))
-        self._add(r"\$\w+", _fmt(C_PROP))
-        self._add(self.KW, _fmt(C_KEYWORD, bold=True))
-        self._add(r"\b([A-Z][a-zA-Z0-9_:]*)\b", _fmt(C_CLASS))
-        self._add(r"(?<=def\s)(\w+[?!]?)", _fmt(C_FUNC, bold=True))
-        self._add(r"\b(\w+[?!]?)(?=\s*\()", _fmt(C_FUNC))
-        self._add(r"\b\d+[\d_]*\.?[\d_]*\b", _fmt(C_NUMBER))
-        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(C_STRING))
-        self._add(r"'[^']*'", _fmt(C_STRING))
-        self._add(r"#[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._ml("=begin", "=end", _fmt(C_COMMENT, italic=True), 1)
+        c = self._c
+        self._add(r":[a-zA-Z_]\w*", _fmt(c("const")))
+        self._add(r"@{1,2}\w+", _fmt(c("self_")))
+        self._add(r"\$\w+", _fmt(c("prop")))
+        self._add(self.KW, _fmt(c("keyword"), bold=True))
+        self._add(r"\b([A-Z][a-zA-Z0-9_:]*)\b", _fmt(c("class_")))
+        self._add(r"(?<=def\s)(\w+[?!]?)", _fmt(c("func"), bold=True))
+        self._add(r"\b(\w+[?!]?)(?=\s*\()", _fmt(c("func")))
+        self._add(r"\b\d+[\d_]*\.?[\d_]*\b", _fmt(c("number")))
+        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(c("string")))
+        self._add(r"'[^']*'", _fmt(c("string")))
+        self._add(r"#[^\n]*", _fmt(c("comment"), italic=True))
+        self._ml("=begin", "=end", _fmt(c("comment"), italic=True), 1)
 
 
 class PhpHighlighter(BaseHighlighter):
@@ -322,17 +495,18 @@ class PhpHighlighter(BaseHighlighter):
           r"match|namespace|new|null|or|print|private|protected|public|readonly|require|"
           r"return|static|switch|throw|trait|true|false|try|unset|use|var|while|yield)\b")
     def _setup_rules(self):
-        self._add(r"<\?php|\?>", _fmt(C_PREPROC, bold=True))
-        self._add(r"\$\w+", _fmt(C_SELF))
-        self._add(self.KW, _fmt(C_KEYWORD, bold=True))
-        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(C_CLASS))
-        self._add(r"\b(\w+)(?=\s*\()", _fmt(C_FUNC))
-        self._add(r"(?:->|::)\b(\w+)\b", _fmt(C_PROP))
-        self._add(r"\b\d+\.?\d*\b", _fmt(C_NUMBER))
-        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(C_STRING))
-        self._add(r"'[^']*'", _fmt(C_STRING))
-        self._add(r"//[^\n]*|#[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._ml(r"/\*", r"\*/", _fmt(C_COMMENT, italic=True), 1)
+        c = self._c
+        self._add(r"<\?php|\?>", _fmt(c("preproc"), bold=True))
+        self._add(r"\$\w+", _fmt(c("self_")))
+        self._add(self.KW, _fmt(c("keyword"), bold=True))
+        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(c("class_")))
+        self._add(r"\b(\w+)(?=\s*\()", _fmt(c("func")))
+        self._add(r"(?:->|::)\b(\w+)\b", _fmt(c("prop")))
+        self._add(r"\b\d+\.?\d*\b", _fmt(c("number")))
+        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(c("string")))
+        self._add(r"'[^']*'", _fmt(c("string")))
+        self._add(r"//[^\n]*|#[^\n]*", _fmt(c("comment"), italic=True))
+        self._ml(r"/\*", r"\*/", _fmt(c("comment"), italic=True), 1)
 
 
 class KotlinHighlighter(BaseHighlighter):
@@ -343,19 +517,20 @@ class KotlinHighlighter(BaseHighlighter):
           r"public|reified|return|sealed|set|super|suspend|tailrec|this|throw|true|try|typealias|"
           r"val|value|var|vararg|when|where|while)\b")
     def _setup_rules(self):
-        self._add(r"@\w+", _fmt(C_DECO))
-        self._add(self.KW, _fmt(C_KEYWORD, bold=True))
-        self._add(r"\b(Int|Long|Short|Byte|Double|Float|Boolean|Char|String|Unit|Nothing|Any|Array|List|Map|Set|MutableList|MutableMap|MutableSet|Sequence|Flow|Deferred|Job|Pair|Triple)\b", _fmt(C_TYPE))
-        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(C_CLASS))
-        self._add(r"(?<=fun\s)(\w+)", _fmt(C_FUNC, bold=True))
-        self._add(r"\b(\w+)(?=\s*\()", _fmt(C_FUNC))
-        self._add(r"\.\b(\w+)\b", _fmt(C_PROP))
-        self._add(r"\b\d+[\d_]*\.?[\d_]*[fFLuU]?\b", _fmt(C_NUMBER))
-        self._add(r'"[^"]*"', _fmt(C_STRING))
-        self._add(r"'(?:[^'\\]|\\.)'", _fmt(C_STRING))
-        self._add(r"//[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._ml(r"/\*", r"\*/", _fmt(C_COMMENT, italic=True), 1)
-        self._ml('"""', '"""', _fmt(C_STRING), 2)
+        c = self._c
+        self._add(r"@\w+", _fmt(c("deco")))
+        self._add(self.KW, _fmt(c("keyword"), bold=True))
+        self._add(r"\b(Int|Long|Short|Byte|Double|Float|Boolean|Char|String|Unit|Nothing|Any|Array|List|Map|Set|MutableList|MutableMap|MutableSet|Sequence|Flow|Deferred|Job|Pair|Triple)\b", _fmt(c("type_")))
+        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(c("class_")))
+        self._add(r"(?<=fun\s)(\w+)", _fmt(c("func"), bold=True))
+        self._add(r"\b(\w+)(?=\s*\()", _fmt(c("func")))
+        self._add(r"\.\b(\w+)\b", _fmt(c("prop")))
+        self._add(r"\b\d+[\d_]*\.?[\d_]*[fFLuU]?\b", _fmt(c("number")))
+        self._add(r'"[^"]*"', _fmt(c("string")))
+        self._add(r"'(?:[^'\\]|\\.)'", _fmt(c("string")))
+        self._add(r"//[^\n]*", _fmt(c("comment"), italic=True))
+        self._ml(r"/\*", r"\*/", _fmt(c("comment"), italic=True), 1)
+        self._ml('"""', '"""', _fmt(c("string")), 2)
 
 
 class SwiftHighlighter(BaseHighlighter):
@@ -366,42 +541,50 @@ class SwiftHighlighter(BaseHighlighter):
           r"protocol|public|repeat|required|rethrows|return|self|Self|set|some|static|struct|"
           r"subscript|super|switch|throws|true|try|typealias|unowned|var|weak|where|while)\b")
     def _setup_rules(self):
-        self._add(r"@\w+", _fmt(C_DECO))
-        self._add(r"#\w+", _fmt(C_PREPROC))
-        self._add(self.KW, _fmt(C_KEYWORD, bold=True))
-        self._add(r"\b(Int|Int8|Int16|Int32|Int64|UInt|Float|Double|Bool|String|Character|Void|Optional|Array|Dictionary|Set|Any|AnyObject|Never|Result|Error)\b", _fmt(C_TYPE))
-        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(C_CLASS))
-        self._add(r"(?<=func\s)(\w+)", _fmt(C_FUNC, bold=True))
-        self._add(r"\b(\w+)(?=\s*\()", _fmt(C_FUNC))
-        self._add(r"\.\b(\w+)\b", _fmt(C_PROP))
-        self._add(r"\b\d+\.?\d*\b", _fmt(C_NUMBER))
-        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(C_STRING))
-        self._add(r"//[^\n]*", _fmt(C_COMMENT, italic=True))
-        self._ml(r"/\*", r"\*/", _fmt(C_COMMENT, italic=True), 1)
+        c = self._c
+        self._add(r"@\w+", _fmt(c("deco")))
+        self._add(r"#\w+", _fmt(c("preproc")))
+        self._add(self.KW, _fmt(c("keyword"), bold=True))
+        self._add(r"\b(Int|Int8|Int16|Int32|Int64|UInt|Float|Double|Bool|String|Character|Void|Optional|Array|Dictionary|Set|Any|AnyObject|Never|Result|Error)\b", _fmt(c("type_")))
+        self._add(r"\b([A-Z][a-zA-Z0-9_]*)\b", _fmt(c("class_")))
+        self._add(r"(?<=func\s)(\w+)", _fmt(c("func"), bold=True))
+        self._add(r"\b(\w+)(?=\s*\()", _fmt(c("func")))
+        self._add(r"\.\b(\w+)\b", _fmt(c("prop")))
+        self._add(r"\b\d+\.?\d*\b", _fmt(c("number")))
+        self._add(r'"(?:[^"\\]|\\.)*"', _fmt(c("string")))
+        self._add(r"//[^\n]*", _fmt(c("comment"), italic=True))
+        self._ml(r"/\*", r"\*/", _fmt(c("comment"), italic=True), 1)
 
 
 class MarkdownHighlighter(BaseHighlighter):
     def _setup_rules(self):
-        self._add(r"^#{1,6}\s.*", _fmt(C_KEYWORD, bold=True))
-        self._add(r"\*\*[^*]+\*\*", _fmt(C_CLASS, bold=True))
-        self._add(r"\*[^*]+\*", _fmt(C_STRING, italic=True))
-        self._add(r"`[^`]+`", _fmt(C_CONST))
-        self._add(r"\[([^\]]+)\]\([^\)]+\)", _fmt(C_FUNC))
-        self._add(r"^>\s.*", _fmt(C_COMMENT, italic=True))
-        self._add(r"^\s*[-*+]\s", _fmt(C_BUILTIN))
-        self._add(r"^\s*\d+\.\s", _fmt(C_BUILTIN))
-        self._ml("```", "```", _fmt(C_CONST), 1)
+        c = self._c
+        self._add(r"^#{1,6}\s.*", _fmt(c("keyword"), bold=True))
+        self._add(r"\*\*[^*]+\*\*", _fmt(c("class_"), bold=True))
+        self._add(r"\*[^*]+\*", _fmt(c("string"), italic=True))
+        self._add(r"`[^`]+`", _fmt(c("const")))
+        self._add(r"\[([^\]]+)\]\([^\)]+\)", _fmt(c("func")))
+        self._add(r"^>\s.*", _fmt(c("comment"), italic=True))
+        self._add(r"^\s*[-*+]\s", _fmt(c("builtin")))
+        self._add(r"^\s*\d+\.\s", _fmt(c("builtin")))
+        self._ml("```", "```", _fmt(c("const")), 1)
 
 
 class TomlHighlighter(BaseHighlighter):
     def _setup_rules(self):
-        self._add(r"^\[\[?[\w.]+\]?\]", _fmt(C_CLASS, bold=True))
-        self._add(r"^\s*\w[\w.-]*\s*=", _fmt(C_PROP))
-        self._add(r'"[^"]*"', _fmt(C_STRING)); self._add(r"'[^']*'", _fmt(C_STRING))
-        self._add(r"\b(true|false)\b", _fmt(C_CONST))
-        self._add(r"\b\d[\d_]*\.?[\d_]*\b", _fmt(C_NUMBER))
-        self._add(r"#[^\n]*", _fmt(C_COMMENT, italic=True))
+        c = self._c
+        self._add(r"^\[\[?[\w.]+\]?\]", _fmt(c("class_"), bold=True))
+        self._add(r"^\s*\w[\w.-]*\s*=", _fmt(c("prop")))
+        self._add(r'"[^"]*"', _fmt(c("string")))
+        self._add(r"'[^']*'", _fmt(c("string")))
+        self._add(r"\b(true|false)\b", _fmt(c("const")))
+        self._add(r"\b\d[\d_]*\.?[\d_]*\b", _fmt(c("number")))
+        self._add(r"#[^\n]*", _fmt(c("comment"), italic=True))
 
+
+# ══════════════════════════════════════════════════════════
+#  Extension Map & Factory
+# ══════════════════════════════════════════════════════════
 
 _EXTENSION_MAP: dict[str, type] = {
     ".py": PythonHighlighter, ".pyw": PythonHighlighter, ".pyi": PythonHighlighter,

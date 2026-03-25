@@ -206,8 +206,17 @@ class PipelineConfig:
     # AI retry — how many times to retry if AI returns empty/timeout before giving up
     ai_retry_count: int = 3          # 0 = no retries (fail immediately)
 
-    # Infinite-loop detection — kill process + rollback + repatch if same error repeats N times
+    # Infinite-loop detection
     loop_error_threshold: int = 20   # 0 = disabled
+
+    # Validator failure → rollback primary patches
+    rollback_on_validator_failure: bool = True   # If validator fails after patch — rollback
+
+    # Code compression mode for AI prompt
+    # "auto"   — compress only when over token budget (default)
+    # "always" — always compress comments/docstrings/log strings
+    # "never"  — always send full code, no compression
+    code_compression: str = "auto"
 
     # History
     include_previous_patches: bool = True
@@ -263,6 +272,8 @@ class PipelineConfig:
             "ai_timeout_seconds": self.ai_timeout_seconds,
             "ai_retry_count": self.ai_retry_count,
             "loop_error_threshold": self.loop_error_threshold,
+            "rollback_on_validator_failure": self.rollback_on_validator_failure,
+            "code_compression": self.code_compression,
             "include_previous_patches": self.include_previous_patches,
             "memory_iterations": self.memory_iterations,
             "metric_patterns": self.metric_patterns,
@@ -294,6 +305,8 @@ class PipelineConfig:
             ai_timeout_seconds=d.get("ai_timeout_seconds", 600),
             ai_retry_count=d.get("ai_retry_count", 3),
             loop_error_threshold=d.get("loop_error_threshold", 20),
+            rollback_on_validator_failure=d.get("rollback_on_validator_failure", True),
+            code_compression=d.get("code_compression", "auto"),
             include_previous_patches=d.get("include_previous_patches", True),
             memory_iterations=d.get("memory_iterations", 5),
             metric_patterns=d.get("metric_patterns", []),

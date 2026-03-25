@@ -1,24 +1,92 @@
 """
-i18n.py — Internationalization for AI Code Sherlock.
+i18n.py — Advanced Internationalization for AI Code Sherlock.
+
+Features:
+  * Instant language switching (no restart needed)
+  * Russian pluralization (1 патч / 2 патча / 5 патчей)
+  * English pluralization (1 patch / 2 patches)
+  * Deep recursive widget walker — retranslates text, tooltips,
+    placeholders, QComboBox items, QListWidget items, QTabWidget tabs
+  * Missing-key detection — untranslated keys get a mark prefix in UI
+    and are logged for developer review
+  * Listener system — widgets register callbacks for live updates
 
 Usage:
-    from ui.i18n import tr, set_language, get_language
+    from ui.i18n import tr, tr_plural, set_language, get_language
 
     set_language("en")
-    print(tr("Новый проект"))   # → "New Project"
+    print(tr("Новый проект"))                      # -> "New Project"
+    print(tr_plural(3, "файл", "файла", "файлов")) # -> "3 files"
+    print(tr_plural(5, "файл"))                     # -> "5 файлов" (ru) / "5 files" (en)
 
 Supported: "ru" (default, identity), "en"
 """
 from __future__ import annotations
+
+import sys
+import threading
 from typing import Callable
 
 _current_lang: str = "ru"
+_lock = threading.Lock()
 _listeners: list[Callable] = []
 
-# ─────────────────────────────────────────────────────────────
-#  Translation table  ru → en
-#  Keep keys exactly as they appear in the source code.
-# ─────────────────────────────────────────────────────────────
+# Track missing keys for developer debugging
+_missing_keys: set[str] = set()
+_missing_key_marker: str = "\u26a0\ufe0f "  # prepended to untranslated strings
+_debug_missing: bool = False                  # set True to print missing keys to stderr
+
+
+# =====================================================================
+#  Pluralization Engine
+# =====================================================================
+
+def _ru_plural_idx(n: int) -> int:
+    """
+    Russian pluralization index.
+    0 -> "1 файл"   1 -> "2 файла"   2 -> "5 файлов"
+    """
+    abs_n = abs(n)
+    mod10, mod100 = abs_n % 10, abs_n % 100
+    if mod10 == 1 and mod100 != 11:
+        return 0
+    if 2 <= mod10 <= 4 and not (12 <= mod100 <= 14):
+        return 1
+    return 2
+
+def _en_plural_idx(n: int) -> int:
+    return 0 if abs(n) == 1 else 1
+
+
+# Plural forms table
+# Key = Russian base form, value = {"ru": (form1, form2_4, form5+), "en": (sing, plur)}
+_PLURAL_FORMS: dict[str, dict[str, tuple]] = {
+    "патч":              {"ru": ("патч", "патча", "патчей"),             "en": ("patch", "patches")},
+    "патч(ей)":          {"ru": ("патч", "патча", "патчей"),             "en": ("patch", "patches")},
+    "файл":              {"ru": ("файл", "файла", "файлов"),             "en": ("file", "files")},
+    "файл(ов)":          {"ru": ("файл", "файла", "файлов"),             "en": ("file", "files")},
+    "строка":            {"ru": ("строка", "строки", "строк"),           "en": ("line", "lines")},
+    "строк":             {"ru": ("строка", "строки", "строк"),           "en": ("line", "lines")},
+    "версия":            {"ru": ("версия", "версии", "версий"),          "en": ("version", "versions")},
+    "версий":            {"ru": ("версия", "версии", "версий"),          "en": ("version", "versions")},
+    "итерация":          {"ru": ("итерация", "итерации", "итераций"),    "en": ("iteration", "iterations")},
+    "модель":            {"ru": ("модель", "модели", "моделей"),         "en": ("model", "models")},
+    "токен":             {"ru": ("токен", "токена", "токенов"),          "en": ("token", "tokens")},
+    "токенов":           {"ru": ("токен", "токена", "токенов"),          "en": ("token", "tokens")},
+    "секунда":           {"ru": ("секунда", "секунды", "секунд"),        "en": ("second", "seconds")},
+    "ошибка":            {"ru": ("ошибка", "ошибки", "ошибок"),          "en": ("error", "errors")},
+    "ошибок":            {"ru": ("ошибка", "ошибки", "ошибок"),          "en": ("error", "errors")},
+    "скрипт":            {"ru": ("скрипт", "скрипта", "скриптов"),       "en": ("script", "scripts")},
+    "событие":           {"ru": ("событие", "события", "событий"),        "en": ("event", "events")},
+    "вкладка":           {"ru": ("вкладка", "вкладки", "вкладок"),       "en": ("tab", "tabs")},
+    "попытка":           {"ru": ("попытка", "попытки", "попыток"),       "en": ("attempt", "attempts")},
+    "вариант":           {"ru": ("вариант", "варианта", "вариантов"),    "en": ("variant", "variants")},
+    "неудача":           {"ru": ("неудача", "неудачи", "неудач"),        "en": ("failure", "failures")},
+    "файл для патчинга": {"ru": ("файл для патчинга", "файла для патчинга", "файлов для патчинга"),
+                          "en": ("patch target file", "patch target files")},
+}
+
+
 _RU_TO_EN: dict[str, str] = {
     "⚡ Pipeline":                   "⚡ Pipeline",
     "патч(ей)":                      "patch(es)",
@@ -225,6 +293,21 @@ _RU_TO_EN: dict[str, str] = {
     "🔍\n\nПатчей нет\nОтправь запрос AI":
         "🔍\n\nNo patches\nSend an AI request",
     # ── Pipeline dialog ───────────────────────────────────────
+    "Откат если валидатор сломался после патча": "Rollback if validator breaks after patch",
+    "Если валидатор падает после применения патча —\nосновные скрипты откатываются к предыдущей версии,\nа AI получает информацию о причине сбоя.": "If validator crashes after applying patch —\nprimary scripts are rolled back to previous version,\nand AI receives info about the failure reason.",
+    "Сжатие кода:": "Code compression:",
+    "🤖 Авто (сжимать только при превышении бюджета)": "🤖 Auto (compress only if over budget)",
+    "⚡ Всегда (убирать комментарии и доки)": "⚡ Always (remove comments and docs)",
+    "📄 Никогда (всегда полный код)": "📄 Never (always full code)",
+    "Авто: сжатие включается только если код не влезает в токен-бюджет\nВсегда: комментарии, докстринги и лог-строки убираются всегда\nНикогда: AI всегда получает полный исходный код": "Auto: compression enabled only if code exceeds token budget\nAlways: comments, docstrings and log lines are always removed\nNever: AI always receives full source code",
+    "Режим патчинга:": "Patch mode:",
+    "⚡ Сразу (Primary → AI → Apply → Validators)": "⚡ Immediate (Primary → AI → Apply → Validators)",
+    "🔒 Валидаторы до AI (Primary → Validators → AI → Apply)": "🔒 Validators before AI (Primary → Validators → AI → Apply)",
+    "🔍 Валидаторы первыми (Validators → Primary → AI → Apply)": "🔍 Validators first (Validators → Primary → AI → Apply)",
+    "🧠 Полный анализ (Primary → Validators → AI → Apply)": "🧠 Full analysis (Primary → Validators → AI → Apply)",
+    "⚡ Сразу: основной скрипт → AI → патч → валидаторы\n🔒 Валидаторы до AI: основной → валидаторы → AI видит оба лога → патч\n🔍 Валидаторы первыми: сначала валидаторы → если OK → основной скрипт → AI → патч\n🧠 Полный анализ: основной скрипт + ВСЕ валидаторы → AI анализирует всё → патч": "⚡ Immediate: primary script → AI → patch → validators\n🔒 Validators before AI: primary → validators → AI sees both logs → patch\n🔍 Validators first: validators first → if OK → primary script → AI → patch\n🧠 Full analysis: primary script + ALL validators → AI analyzes everything → patch",
+    "Файлы которые скрипт генерирует — будут прикреплены к контексту AI.\nПоддерживаются: .csv .json .xlsx .txt .log .pkl .npy .npz .parquet и любой текст.\nТакже можно мониторить папки и захватывать снимки окон программы.": "Files the script generates — will be attached to AI context.\nSupported: .csv .json .xlsx .txt .log .pkl .npy .npz .parquet and any text.\nYou can also monitor folders and capture program window screenshots.",
+    "симв": "chars",
     "⚙️  Основное":                  "⚙️  General",
     "📜  Скрипты":                   "📜  Scripts",
     "📁  Файлы вывода":              "📁  Output Files",
@@ -561,6 +644,13 @@ _RU_TO_EN: dict[str, str] = {
     "Папка с модулями для патчинга":    "Module folder for patching",
     "Подходящих файлов не найдено в папке.": "No matching files found in folder.",
     # ── Main window status/messages ───────────────────────────
+    "Несохранённые изменения":          "Unsaved Changes",
+    "Сохранить перед выходом?":         "Save before exiting?",
+    "У вас есть несохранённые изменения в следующих файлах:":
+        "You have unsaved changes in the following files:",
+    "🎨 Патчи":                         "🎨 Patches",
+    "Подсветить пропатченные блоки в редакторе":
+        "Highlight patched blocks in the editor",
     "ПАТЧ #{idx + 1}":                  "PATCH #{idx + 1}",
     "текущий файл":                     "current file",
     "КОД":                              "CODE",
@@ -1141,11 +1231,17 @@ _RU_TO_EN: dict[str, str] = {
 _EN_TO_RU: dict[str, str] = {v: k for k, v in _RU_TO_EN.items()}
 
 
+# =====================================================================
+#  Public API
+# =====================================================================
+
 def set_language(lang: str) -> None:
     """Set active language ('ru' or 'en'). Notifies all registered listeners."""
     global _current_lang
-    _current_lang = lang
-    for cb in _listeners:
+    with _lock:
+        _current_lang = lang
+        listeners = list(_listeners)
+    for cb in listeners:
         try:
             cb(lang)
         except Exception:
@@ -1160,62 +1256,286 @@ def tr(text: str) -> str:
     """
     Translate *text* to the current language.
     If translation is missing the original is returned unchanged.
+    In debug mode, missing keys are logged and prefixed with a marker.
     """
     if _current_lang == "ru":
         return text
+
     if _current_lang == "en":
-        return _RU_TO_EN.get(text, text)
+        translated = _RU_TO_EN.get(text)
+        if translated is not None:
+            return translated
+
+        # Key not found — track it
+        if text and text not in _missing_keys:
+            _missing_keys.add(text)
+            if _debug_missing:
+                print(f"[i18n] MISSING KEY: {text!r}", file=sys.stderr)
+
+        # In debug mode, prefix with marker so devs see untranslated strings
+        if _debug_missing and text:
+            return f"{_missing_key_marker}{text}"
+        return text
+
     return text
+
+
+def tr_plural(n: int, *forms: str, include_number: bool = True) -> str:
+    """
+    Pluralize a word for the current language.
+
+    Usage with explicit forms (Russian: singular, 2-4 form, 5+ form):
+        tr_plural(5, "файл", "файла", "файлов")  ->  "5 файлов"
+        tr_plural(1, "файл", "файла", "файлов")  ->  "1 файл"
+
+    Usage with built-in plural table (just pass the base form):
+        tr_plural(5, "файл")   ->  "5 файлов" (ru) / "5 files" (en)
+        tr_plural(1, "патч")   ->  "1 патч"   (ru) / "1 patch"  (en)
+
+    Set include_number=False to get just the word without the count.
+    """
+    key = forms[0] if forms else ""
+
+    if _current_lang == "ru":
+        if len(forms) >= 3:
+            idx = _ru_plural_idx(n)
+            word = forms[idx]
+        elif key in _PLURAL_FORMS:
+            ru_forms = _PLURAL_FORMS[key]["ru"]
+            idx = _ru_plural_idx(n)
+            word = ru_forms[idx]
+        else:
+            word = key
+    elif _current_lang == "en":
+        if key in _PLURAL_FORMS:
+            en_forms = _PLURAL_FORMS[key]["en"]
+            idx = _en_plural_idx(n)
+            word = en_forms[idx]
+        elif len(forms) >= 3:
+            idx = _ru_plural_idx(n)
+            ru_form = forms[idx]
+            word = _RU_TO_EN.get(ru_form, ru_form)
+        else:
+            word = tr(key)
+    else:
+        word = key
+
+    if include_number:
+        return f"{n} {word}"
+    return word
 
 
 def register_listener(callback: Callable) -> None:
     """Register a callable(lang: str) called whenever language changes."""
-    if callback not in _listeners:
-        _listeners.append(callback)
+    with _lock:
+        if callback not in _listeners:
+            _listeners.append(callback)
 
 
 def unregister_listener(callback: Callable) -> None:
-    _listeners[:] = [c for c in _listeners if c != callback]
+    with _lock:
+        _listeners[:] = [c for c in _listeners if c != callback]
 
 
-def retranslate_widget(widget) -> None:
+def get_missing_keys() -> set[str]:
+    """Return set of keys that were requested but not found in translations."""
+    return set(_missing_keys)
+
+
+def clear_missing_keys() -> None:
+    """Clear the missing keys tracker."""
+    _missing_keys.clear()
+
+
+def enable_debug_missing(enabled: bool = True) -> None:
     """
-    Walk the widget tree and attempt to retranslate all text-bearing widgets.
-    Handles: QPushButton, QLabel, QCheckBox, QGroupBox, QTabBar, QLineEdit placeholder.
+    Enable/disable missing key debugging.
+    When enabled:
+      - Missing keys are printed to stderr
+      - Untranslated strings get a warning prefix in UI
     """
+    global _debug_missing
+    _debug_missing = enabled
+
+
+# =====================================================================
+#  Deep Widget Retranslation
+# =====================================================================
+
+def retranslate_widget(widget, *, _visited: set | None = None) -> None:
+    """
+    Recursively walk the widget tree and retranslate all text-bearing
+    properties to the current language.
+
+    Handles:
+      - QPushButton:     text, tooltip
+      - QLabel:          text, tooltip
+      - QCheckBox:       text, tooltip
+      - QGroupBox:       title, tooltip
+      - QTabWidget:      tab texts, tab tooltips
+      - QComboBox:       item texts (preserves itemData and current index)
+      - QListWidget:     item texts, item tooltips
+      - QLineEdit:       placeholder text, tooltip
+      - QPlainTextEdit:  placeholder text
+      - QTextEdit:       placeholder text (non-html)
+      - QAction:         text, tooltip, statusTip
+      - QMenu:           title, action texts
+      - QSpinBox etc:    tooltip, suffix, prefix
+
+    Avoids infinite loops via visited set.
+    Does NOT retranslate children discovered through findChildren()
+    to avoid duplicate traversal — uses children() instead.
+    """
+    if _visited is None:
+        _visited = set()
+
+    wid = id(widget)
+    if wid in _visited:
+        return
+    _visited.add(wid)
+
     try:
         from PyQt6.QtWidgets import (
             QPushButton, QLabel, QCheckBox, QGroupBox,
-            QTabWidget, QLineEdit, QPlainTextEdit
+            QTabWidget, QComboBox, QListWidget, QListWidgetItem,
+            QLineEdit, QPlainTextEdit, QTextEdit, QMenu,
+            QSpinBox, QDoubleSpinBox, QWidget as _QW, QToolButton,
         )
-        from PyQt6.QtWidgets import QWidget as _QW
+    except ImportError:
+        return
 
-        # Retranslate this widget
-        if isinstance(widget, QPushButton):
-            original = widget.text()
-            translated = tr(original)
-            if translated != original:
-                widget.setText(translated)
-        elif isinstance(widget, (QLabel, QCheckBox, QGroupBox)):
-            original = widget.text()
-            translated = tr(original)
-            if translated != original:
-                widget.setText(translated)
-        elif isinstance(widget, QLineEdit):
-            ph = widget.placeholderText()
-            translated = tr(ph)
-            if translated != ph:
-                widget.setPlaceholderText(translated)
-        elif isinstance(widget, QTabWidget):
-            for i in range(widget.count()):
-                orig = widget.tabText(i)
+    def _tr_attr(w, getter: str, setter: str) -> None:
+        try:
+            original = getattr(w, getter)()
+            if original:
+                translated = tr(original)
+                if translated != original:
+                    getattr(w, setter)(translated)
+        except Exception:
+            pass
+
+    def _tr_tooltip(w) -> None:
+        try:
+            tip = w.toolTip()
+            if tip:
+                translated = tr(tip)
+                if translated != tip:
+                    w.setToolTip(translated)
+        except Exception:
+            pass
+
+    # -- Tooltip is universal
+    _tr_tooltip(widget)
+
+    if isinstance(widget, QPushButton):
+        _tr_attr(widget, "text", "setText")
+
+    elif isinstance(widget, QLabel):
+        _tr_attr(widget, "text", "setText")
+
+    elif isinstance(widget, QCheckBox):
+        _tr_attr(widget, "text", "setText")
+
+    elif isinstance(widget, QGroupBox):
+        _tr_attr(widget, "title", "setTitle")
+
+    elif isinstance(widget, QTabWidget):
+        for i in range(widget.count()):
+            orig = widget.tabText(i)
+            t = tr(orig)
+            if t != orig:
+                widget.setTabText(i, t)
+            tip = widget.tabToolTip(i)
+            if tip:
+                tt = tr(tip)
+                if tt != tip:
+                    widget.setTabToolTip(i, tt)
+
+    elif isinstance(widget, QComboBox):
+        widget.blockSignals(True)
+        current_idx = widget.currentIndex()
+        for i in range(widget.count()):
+            orig = widget.itemText(i)
+            t = tr(orig)
+            if t != orig:
+                widget.setItemText(i, t)
+            try:
+                tip = widget.itemData(i, 3)  # ToolTipRole
+                if isinstance(tip, str) and tip:
+                    tt = tr(tip)
+                    if tt != tip:
+                        widget.setItemData(i, tt, 3)
+            except Exception:
+                pass
+        widget.setCurrentIndex(current_idx)
+        widget.blockSignals(False)
+
+    elif isinstance(widget, QListWidget):
+        for i in range(widget.count()):
+            item = widget.item(i)
+            if item:
+                orig = item.text()
                 t = tr(orig)
                 if t != orig:
-                    widget.setTabText(i, t)
+                    item.setText(t)
+                tip = item.toolTip()
+                if tip:
+                    tt = tr(tip)
+                    if tt != tip:
+                        item.setToolTip(tt)
 
-        # Recurse into children
-        for child in widget.findChildren(_QW):
-            retranslate_widget(child)
+    elif isinstance(widget, QLineEdit):
+        _tr_attr(widget, "placeholderText", "setPlaceholderText")
 
+    elif isinstance(widget, QPlainTextEdit):
+        _tr_attr(widget, "placeholderText", "setPlaceholderText")
+
+    elif isinstance(widget, QTextEdit):
+        try:
+            ph = widget.placeholderText()
+            if ph:
+                t = tr(ph)
+                if t != ph:
+                    widget.setPlaceholderText(t)
+        except Exception:
+            pass
+
+    elif isinstance(widget, QMenu):
+        _tr_attr(widget, "title", "setTitle")
+        try:
+            for action in widget.actions():
+                orig = action.text()
+                if orig:
+                    t = tr(orig)
+                    if t != orig:
+                        action.setText(t)
+                tip = action.toolTip()
+                if tip:
+                    tt = tr(tip)
+                    if tt != tip:
+                        action.setToolTip(tt)
+        except Exception:
+            pass
+
+    elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+        try:
+            sfx = widget.suffix()
+            if sfx:
+                t = tr(sfx)
+                if t != sfx:
+                    widget.setSuffix(t)
+            pfx = widget.prefix()
+            if pfx:
+                t = tr(pfx)
+                if t != pfx:
+                    widget.setPrefix(t)
+        except Exception:
+            pass
+
+    # -- Recurse into direct children
+    try:
+        for child in widget.children():
+            if isinstance(child, _QW):
+                retranslate_widget(child, _visited=_visited)
     except Exception:
         pass

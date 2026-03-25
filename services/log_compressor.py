@@ -112,12 +112,16 @@ class LogCompressor:
         if result.original_lines == result.kept_lines:
             return log_text
 
+        # FIX: Build separator as a separate variable.
+        # Previously: f"...]\n" "─" * 60  — Python implicit string concat
+        # caused the ENTIRE f-string + "─" to be multiplied 60 times!
+        separator = "─" * 60
         header = (
             f"[ЛОГ: {script_name or 'script'} | "
             f"Оригинал: {result.original_lines} строк → "
             f"Сжато до: {result.kept_lines} строк | "
             f"Ошибок: {len(result.error_lines)}]\n"
-            "─" * 60 + "\n"
+            f"{separator}\n"
         )
         combined = header + result.text
         # Final hard trim if needed

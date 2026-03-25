@@ -185,6 +185,27 @@ class PipelineDialog(QDialog):
         self._chk_auto_rollback = QCheckBox(tr("Автооткат при синтаксической ошибке"))
         self._chk_auto_rollback.setChecked(True)
         sf.addRow("", self._chk_auto_rollback)
+
+        self._chk_rollback_on_validator = QCheckBox(tr("Откат если валидатор сломался после патча"))
+        self._chk_rollback_on_validator.setChecked(True)
+        self._chk_rollback_on_validator.setToolTip(tr(
+            "Если валидатор падает после применения патча —\n"
+            "основные скрипты откатываются к предыдущей версии,\n"
+            "а AI получает информацию о причине сбоя."
+        ))
+        sf.addRow("", self._chk_rollback_on_validator)
+
+        self._cmb_code_compression = QComboBox()
+        self._cmb_code_compression.addItem(tr("🤖 Авто (сжимать только при превышении бюджета)"), "auto")
+        self._cmb_code_compression.addItem(tr("⚡ Всегда (убирать комментарии и доки)"), "always")
+        self._cmb_code_compression.addItem(tr("📄 Никогда (всегда полный код)"), "never")
+        self._cmb_code_compression.setToolTip(tr(
+            "Авто: сжатие включается только если код не влезает в токен-бюджет\n"
+            "Всегда: комментарии, докстринги и лог-строки убираются всегда\n"
+            "Никогда: AI всегда получает полный исходный код"
+        ))
+        sf.addRow(tr("Сжатие кода:"), self._cmb_code_compression)
+
         self._cmb_patch_mode = QComboBox()
         self._cmb_patch_mode.addItem(tr("⚡ Сразу (Primary → AI → Apply → Validators)"), "immediate")
         self._cmb_patch_mode.addItem(tr("🔒 Валидаторы до AI (Primary → Validators → AI → Apply)"), "after_val")
@@ -394,7 +415,7 @@ class PipelineDialog(QDialog):
         self._spn_script_timeout.valueChanged.connect(self._update_timeout_label)
         timeout_row.addWidget(self._spn_script_timeout); timeout_row.addWidget(self._lbl_timeout_human); timeout_row.addStretch()
         for lbl3, secs in [("1ч", 3600), ("6ч", 21600), ("12ч", 43200), ("24ч", 86400), ("99ч", 356400)]:
-            bt = QPushButton(lbl3); bt.setFixedWidth(38)
+            bt = QPushButton(lbl3); bt.setFixedWidth(48)  # ← БЫЛО 38, СТАЛО 48
             bt.clicked.connect(lambda _, s=secs: self._spn_script_timeout.setValue(s))
             timeout_row.addWidget(bt)
         frm.addRow(tr("Таймаут:"), timeout_row)
@@ -809,7 +830,7 @@ class PipelineDialog(QDialog):
         self._spn_tokens.setToolTip(tr("200k=стандарт, 1M=Gemini 1.5 Pro, 2M=Gemini 1.5 Ultra"))
         tokens_row.addWidget(self._spn_tokens)
         for label, val in [("200k", 200_000), ("500k", 500_000), ("1M", 1_000_000), ("2M", 2_000_000)]:
-            bt = QPushButton(label); bt.setFixedWidth(52)
+            bt = QPushButton(label); bt.setFixedWidth(58)  # ← БЫЛО 52, СТАЛО 58
             bt.clicked.connect(lambda _, v=val: self._spn_tokens.setValue(v))
             tokens_row.addWidget(bt)
         tokens_row.addStretch()
@@ -989,7 +1010,7 @@ class PipelineDialog(QDialog):
         timeout_row.addWidget(self._lbl_ai_timeout_human)
         timeout_row.addStretch()
         for lbl_t, secs_t in [("5м", 300), ("10м", 600), ("20м", 1200), ("30м", 1800), ("1ч", 3600)]:
-            bt = QPushButton(lbl_t); bt.setFixedWidth(38)
+            bt = QPushButton(lbl_t); bt.setFixedWidth(48)  # ← БЫЛО 38, СТАЛО 48
             bt.clicked.connect(lambda _, s=secs_t: self._spn_ai_timeout.setValue(s))
             timeout_row.addWidget(bt)
         al_ai.addRow(tr("Таймаут AI:"), timeout_row)
@@ -1067,6 +1088,14 @@ class PipelineDialog(QDialog):
         self._spn_iterations.setValue(cfg.max_iterations)
         self._chk_auto_apply.setChecked(cfg.auto_apply_patches)
         self._chk_auto_rollback.setChecked(cfg.auto_rollback_on_error)
+        self._chk_rollback_on_validator.setChecked(
+            getattr(cfg, "rollback_on_validator_failure", True)
+        )
+        comp = getattr(cfg, "code_compression", "auto")
+        for i in range(self._cmb_code_compression.count()):
+            if self._cmb_code_compression.itemData(i) == comp:
+                self._cmb_code_compression.setCurrentIndex(i)
+                break
         mode = getattr(cfg, "patch_mode", "immediate")
         for i in range(self._cmb_patch_mode.count()):
             if self._cmb_patch_mode.itemData(i) == mode:
@@ -1108,6 +1137,8 @@ class PipelineDialog(QDialog):
         cfg.max_iterations = self._spn_iterations.value()
         cfg.auto_apply_patches = self._chk_auto_apply.isChecked()
         cfg.auto_rollback_on_error = self._chk_auto_rollback.isChecked()
+        cfg.rollback_on_validator_failure = self._chk_rollback_on_validator.isChecked()
+        cfg.code_compression = self._cmb_code_compression.currentData() or "auto"
         cfg.patch_mode = self._cmb_patch_mode.currentData() or "immediate"
         cfg.retry_on_patch_failure = self._spn_retry.value()
         cfg.ai_strategy = AIStrategy(self._cmb_strategy.currentData())

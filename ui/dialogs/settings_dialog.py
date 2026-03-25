@@ -184,7 +184,7 @@ class SettingsDialog(QDialog):
         for label, val in [("8k", 8192), ("32k", 32768), ("128k", 131072),
                             ("200k", 200000), ("1M", 1000000), ("2M", 2000000)]:
             bt = QPushButton(label)
-            bt.setFixedWidth(38)
+            bt.setFixedWidth(50)  # ← БЫЛО 38, СТАЛО 50
             bt.clicked.connect(lambda _, v=val: self._spn_tokens.setValue(v))
             tok_row.addWidget(bt)
         form.addRow("Max tokens:", tok_row)
@@ -407,7 +407,7 @@ class SettingsDialog(QDialog):
         timeout_ai_row.addWidget(self._lbl_chat_timeout_human)
         timeout_ai_row.addStretch()
         for lbl_t, secs_t in [("1м", 60), ("5м", 300), ("10м", 600), ("20м", 1200), ("30м", 1800)]:
-            bt = QPushButton(lbl_t); bt.setFixedWidth(38)
+            bt = QPushButton(lbl_t); bt.setFixedWidth(50)  # ← БЫЛО 38, СТАЛО 50
             bt.clicked.connect(lambda _, s=secs_t: self._spn_chat_timeout.setValue(s))
             timeout_ai_row.addWidget(bt)
         fa_l.addRow(tr("Таймаут AI:"), timeout_ai_row)
@@ -429,6 +429,11 @@ class SettingsDialog(QDialog):
         retry_ai_row.addWidget(self._spn_chat_retry)
         retry_ai_row.addWidget(self._lbl_chat_retry_total)
         retry_ai_row.addStretch()
+        # Добавляем кнопки быстрого выбора повторов
+        for lbl_r, val_r in [("0", 0), ("1", 1), ("3", 3), ("5", 5), ("10", 10)]:
+            bt = QPushButton(lbl_r); bt.setFixedWidth(42)  # ← НОВЫЕ КНОПКИ ШИРИНОЙ 42
+            bt.clicked.connect(lambda _, v=val_r: self._spn_chat_retry.setValue(v))
+            retry_ai_row.addWidget(bt)
         fa_l.addRow(tr("Повторов при сбое:"), retry_ai_row)
         self._update_chat_retry_label(self._spn_chat_retry.value())
 
@@ -599,7 +604,7 @@ class SettingsDialog(QDialog):
         size_row.addWidget(self._spn_ui_font)
         for sz in [9, 10, 11, 12, 13, 14]:
             b = QPushButton(str(sz))
-            b.setFixedWidth(34)
+            b.setFixedWidth(42)  # ← БЫЛО 34, СТАЛО 42
             b.clicked.connect(lambda _, s=sz: self._spn_ui_font.setValue(s))
             size_row.addWidget(b)
         size_row.addStretch()

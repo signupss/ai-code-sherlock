@@ -816,8 +816,14 @@ class AutoImproveEngine:
             val_pre_ctxs = self._collect_output_files(cfg, cfg.validator_scripts)
             output_contexts.extend(val_pre_ctxs)
 
-            all_ok = all(sr.success for sr in val_results_pre)
-            passed = sum(1 for sr in val_results_pre if sr.success)
+            all_ok = all(
+                sr.success and not self._has_critical_errors(sr)
+                for sr in val_results_pre
+            )
+            passed = sum(
+                1 for sr in val_results_pre
+                if sr.success and not self._has_critical_errors(sr)
+            )
             total  = len(val_results_pre)
 
             if not all_ok:
@@ -844,8 +850,13 @@ class AutoImproveEngine:
 
         # ── Build prompt (includes validator logs if after_val) ───────────
         self._emit("ai_thinking", {"message": "Строю контекст для AI..."})
+
+        # Collect ALL validator results from this iteration (pre-AI validators)
+        all_validator_results = list(val_results_pre)
+
         prompt = self._build_prompt(cfg, iteration, primary_results,
-                                    output_contexts, run.iterations, strategy)
+                                    output_contexts, run.iterations, strategy,
+                                    validator_results=all_validator_results)
 
         # ── Query AI ──────────────────────────────────────────────────────
         strategy_label = (cfg.custom_strategy.name if cfg.custom_strategy
@@ -915,11 +926,70 @@ class AutoImproveEngine:
         # ── Run validators AFTER patch (immediate mode only) ──────────────
         # In "all_then_ai" validators already ran before AI — don't run again
         if patch_mode == "immediate" and cfg.validator_scripts and not result.rolled_back:
-            self._emit("ai_thinking", {"message": "🔍 Запуск валидаторов..."})
+            self._emit("ai_thinking", {"message": "🔍 Запуск валидаторов после патча..."})
             val_results_post = await self._run_validators(cfg)
             result.script_results.extend(val_results_post)
             val_post_ctxs = self._collect_output_files(cfg, cfg.validator_scripts)
             output_contexts.extend(val_post_ctxs)
+
+            # ── Rollback if validator fails after patch ─────────────────────────
+            # Check BOTH exit code AND error patterns in output
+            if getattr(cfg, "rollback_on_validator_failure", True) and result.patches_applied > 0:
+                failed_validators = [sr for sr in val_results_post if not sr.success]
+                # CRITICAL: Also detect validators that "passed" (exit 0) but logged errors
+                # e.g. shape mismatch, broadcast errors that the script catches internally
+                for sr in val_results_post:
+                    if sr.success and self._has_critical_errors(sr):
+                        if sr not in failed_validators:
+                            failed_validators.append(sr)
+                            self._emit("ai_thinking", {
+                                "message": (
+                                    f"⚠ Валидатор {sr.short_name} вернул код 0, "
+                                    f"но в логах найдены критические ошибки — считаю провалом"
+                                )
+                            })
+                if failed_validators:
+                    failed_names = ", ".join(sr.short_name for sr in failed_validators)
+                    self._emit("ai_thinking", {
+                        "message": (
+                            f"⛔ Валидатор сломался после патча ({failed_names}) — "
+                            f"откат основных скриптов..."
+                        )
+                    })
+                    # Rollback all primary script patches
+                    for sc in cfg.primary_scripts:
+                        if sc.allow_patching:
+                            versions = self._vc.get_versions(sc.script_path)
+                            if versions:
+                                try:
+                                    self._vc.restore_version(versions[0])
+                                    self._emit("rollback_file", {
+                                        "file": Path(sc.script_path).name,
+                                        "reason": "validator_failure"
+                                    })
+                                except Exception as _e:
+                                    if self._logger:
+                                        self._logger.error(
+                                            f"Validator rollback failed for {sc.script_path}: {_e}",
+                                            source="AutoImprove"
+                                        )
+                    # Record in error map
+                    for vr in failed_validators:
+                        self._em.add_avoid_pattern(
+                            description=f"Патч итерации {iteration} сломал валидатор {vr.short_name}",
+                            error_context=vr.stderr[:300] if vr.stderr else "exit code != 0",
+                            bad_approach="Последний патч нарушил контракт/интерфейс, ожидаемый валидатором",
+                            better_approach=(
+                                "Патчить основной скрипт с учётом интерфейса валидатора; "
+                                "не менять сигнатуры функций/форматы вывода которые валидатор проверяет"
+                            ),
+                        )
+                    result.rolled_back = True
+                    self._emit("rollback", {
+                        "reason": f"Валидатор упал после патча: {failed_names}",
+                        "iteration": iteration
+                    })
+
         result.finished_at = datetime.now()
         return result
 
@@ -961,6 +1031,7 @@ class AutoImproveEngine:
         output_contexts: list[str],
         history: list[IterationResult],
         strategy: AIStrategy,
+        validator_results: list[ScriptResult] | None = None,
     ) -> str:
         parts: list[str] = []
         lc = LogCompressor(CompressionConfig(max_output_chars=cfg.log_max_chars))
@@ -997,11 +1068,21 @@ class AutoImproveEngine:
         recent_failed = sum(1 for r in history[-3:] if r.patches_applied == 0 and not r.rolled_back)
         force_full = (iteration <= 2) or (recent_failed >= 2) or (not ever_applied)
 
+        # Code compression mode from config
+        compression_mode = getattr(cfg, "code_compression", "auto")
+        # "never"  → always full code, ignore budget
+        # "always" → always compress (skip force_full logic)
+        # "auto"   → default behaviour (compress only when over budget)
+        if compression_mode == "never":
+            force_full = True   # never compress
+        elif compression_mode == "always":
+            force_full = False  # always allow compression
+
         for sc in cfg.primary_scripts:
             if sc.allow_patching and Path(sc.script_path).exists():
                 content = Path(sc.script_path).read_text(encoding="utf-8", errors="replace")
                 token_est = TokenBudget.estimate_tokens(content)
-                budget_for_code = cfg.max_context_tokens // 3  # 33% budget for code
+                budget_for_code = cfg.max_context_tokens // 3
 
                 if force_full or token_est <= budget_for_code:
                     # Full code — no compression
@@ -1074,12 +1155,54 @@ class AutoImproveEngine:
             status = "✓ OK" if sr.success else f"✗ Код {sr.exit_code}"
             parts.append(f"### `{sr.short_name}` [{status}, {sr.elapsed_seconds:.1f}s]\n"
                          f"```\n{compressed}\n```\n")
+            # If failed — add a dedicated error block so AI sees it clearly
+            if not sr.success or self._has_critical_errors(sr):
+                unique_errors = self._extract_unique_errors_from_log(sr)
+                if unique_errors:
+                    parts.append(
+                        f"**⚠ ОШИБКА в `{sr.short_name}` ({len(unique_errors)} уникальных):**\n"
+                        f"```\n" + "\n".join(unique_errors) + "\n```\n"
+                    )
 
         # Output files
         if output_contexts:
             parts.append("## ВЫХОДНЫЕ ФАЙЛЫ\n")
             for ctx in output_contexts:
                 parts.append(ctx)
+
+        # ── Validator results (from pre-AI run or previous iteration) ─────
+        if validator_results:
+            has_val_errors = any(
+                not sr.success or self._has_critical_errors(sr)
+                for sr in validator_results
+            )
+            if has_val_errors:
+                parts.append("## ⚠️ ОШИБКИ ВАЛИДАТОРА\n")
+                parts.append(
+                    "Валидатор обнаружил проблемы после патча. "
+                    "AI ДОЛЖЕН исправить эти ошибки в следующем патче.\n"
+                )
+            else:
+                parts.append("## ЛОГИ ВАЛИДАТОРОВ\n")
+
+            for sr in validator_results:
+                status = "✓ OK" if (sr.success and not self._has_critical_errors(sr)) \
+                    else f"✗ ОШИБКИ"
+                raw = sr.combined_log or (sr.stdout + "\n" + sr.stderr)
+                compressed = lc.compress_for_ai(raw, sr.short_name)
+                parts.append(
+                    f"### `{sr.short_name}` [{status}, {sr.elapsed_seconds:.1f}s]\n"
+                    f"```\n{compressed}\n```\n"
+                )
+                # Extract and deduplicate validator error lines
+                val_errors = self._extract_unique_errors_from_log(sr)
+                if val_errors:
+                    parts.append(
+                        f"**⚠ КРИТИЧЕСКИЕ ОШИБКИ ВАЛИДАТОРА `{sr.short_name}`:**\n"
+                        f"```\n" + "\n".join(val_errors) + "\n```\n"
+                        "Эти ошибки означают что предыдущий патч сломал интерфейс/данные "
+                        "которые валидатор проверяет. Исправь первопричину.\n"
+                    )
 
         # History summary
         mem = min(len(history), cfg.memory_iterations)
@@ -1440,7 +1563,110 @@ SEARCH_BLOCK должен ТОЧНО совпадать с кодом файла
 
     @staticmethod
     def _extract_errors(results: list[ScriptResult]) -> str:
-        return "\n".join(r.stderr[:500] for r in results if r.stderr)
+        """Extract errors from script results with deduplication."""
+        seen_signatures: set[str] = set()
+        parts = []
+        for r in results:
+            unique_errors = AutoImproveEngine._extract_unique_errors_from_log(r)
+            if unique_errors:
+                parts.append(f"[{r.short_name}] ERRORS:\n" + "\n".join(unique_errors))
+            elif r.stderr and r.stderr.strip():
+                # Fallback: use raw stderr but deduplicate lines
+                lines = r.stderr.strip().splitlines()
+                deduped = []
+                for line in lines:
+                    sig = re.sub(r'\d+', 'N', line.strip())[:100]
+                    if sig not in seen_signatures:
+                        seen_signatures.add(sig)
+                        deduped.append(line)
+                if deduped:
+                    parts.append(f"[{r.short_name}] STDERR:\n" + "\n".join(deduped[-30:]))
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _has_critical_errors(sr: ScriptResult) -> bool:
+        """
+        Check if a script result contains critical error patterns in its output,
+        even if the script exited with code 0.
+        This catches validators that log errors but don't crash.
+        """
+        _CRITICAL_PATTERNS = (
+            "[error]", "[fatal]", "[critical]",
+            "error:", "exception:", "traceback",
+            "could not be broadcast", "shape mismatch",
+            "indexerror", "valueerror", "typeerror",
+            "keyerror", "attributeerror", "runtimeerror",
+            "operands could not", "incompatible",
+            "filenotfounderror", "modulenotfounderror",
+            "assert", "failed",
+        )
+        log_text = (sr.combined_log or sr.stdout + "\n" + sr.stderr).lower()
+        # Count error occurrences — only flag if multiple
+        error_count = sum(
+            1 for pattern in _CRITICAL_PATTERNS
+            if pattern in log_text
+        )
+        # Need at least 2 different error patterns or 3+ occurrences of one
+        if error_count >= 2:
+            return True
+        for pattern in _CRITICAL_PATTERNS:
+            if log_text.count(pattern) >= 3:
+                return True
+        return False
+
+    @staticmethod
+    def _extract_unique_errors_from_log(sr: ScriptResult) -> list[str]:
+        """
+        Extract unique error lines from a script result.
+        Deduplicates by normalizing numbers and taking only first occurrence.
+        Returns max 20 unique error lines.
+        """
+        log_text = sr.combined_log or (sr.stdout + "\n" + sr.stderr)
+        if not log_text:
+            return []
+
+        _ERROR_KEYWORDS = (
+            "error", "exception", "traceback", "failed",
+            "critical", "fatal", "assert", "could not",
+            "mismatch", "incompatible", "invalid",
+        )
+
+        seen_signatures: set[str] = set()
+        unique_errors: list[str] = []
+        lines = log_text.splitlines()
+        in_traceback = False
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            # Detect traceback blocks
+            if "Traceback" in stripped:
+                in_traceback = True
+
+            is_error = (
+                in_traceback
+                or any(kw in stripped.lower() for kw in _ERROR_KEYWORDS)
+            )
+
+            if is_error:
+                # Normalize for dedup: replace numbers, timestamps, addresses
+                sig = re.sub(r'\d{2}:\d{2}:\d{2}[\.,]\d+', 'HH:MM:SS', stripped)
+                sig = re.sub(r'0x[0-9a-fA-F]+', '0xADDR', sig)
+                sig = re.sub(r'\(\d+,\d+\)', '(N,N)', sig)
+                sig = sig[:120]
+
+                if sig not in seen_signatures:
+                    seen_signatures.add(sig)
+                    unique_errors.append(stripped)
+
+            # End of traceback
+            if in_traceback and stripped and not stripped.startswith(" "):
+                if not stripped.startswith("Traceback"):
+                    in_traceback = False
+
+        return unique_errors[:20]
 
     @staticmethod
     def _find_target(patch: PatchBlock, scripts: dict[str, str]) -> Optional[str]:

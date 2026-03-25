@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![PyQt6](https://img.shields.io/badge/UI-PyQt6-green.svg)](https://pypi.org/project/PyQt6/)
 [![Ollama](https://img.shields.io/badge/AI-Ollama%20%7C%20OpenAI%20%7C%20API-purple.svg)](https://ollama.ai)
-[![Version](https://img.shields.io/badge/version-2.2.0-brightgreen.svg)](https://github.com/signupss/ai-code-sherlock/releases)
+[![Version](https://img.shields.io/badge/version-2.3.1-brightgreen.svg)](https://github.com/signupss/ai-code-sherlock/releases)
 
 [🌐 Website](https://codesherlock.dev/) · [⬇ Download](https://github.com/signupss/ai-code-sherlock/releases/latest) · [📖 Docs](#-quick-start) · [🐛 Issues](https://github.com/signupss/ai-code-sherlock/issues)
 
@@ -406,6 +406,11 @@ macOS:    ~/.ai_code_sherlock/settings.json
 ---
 
 ## 🔄 Changelog
+
+### v2.3.1
+- 🌍 **System i18n**: Added full localization for exit confirmation dialogs and "Unsaved Changes" warnings.
+- 🛠️ **UI Polish**: Fixed untranslated strings in the main application menu and system popups.
+- 🛡️ **Shutdown Safety**: Improved file state checking before closing the application to prevent data loss.
 
 ### v2.3.0
 - 🎨 **Light / Monokai / Dracula themes** — full 4-theme support with live switching, accent color picker, all dialogs and editor respond instantly without restart

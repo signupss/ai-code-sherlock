@@ -1,21 +1,34 @@
 """
 Main Window — full IDE layout
 Left: File Tree | Center: Code Editor | Right-center: Chat+Logs+Input | Right: AI Patches
+
+Upgrades:
+  * Debounce/throttle for resize and input events (60 FPS)
+  * Toast notification system — non-blocking in-app popups for errors
+  * Global exception handler — AI engine crashes show toasts, not crashes
+  * Skeleton shimmer loaders in chat/log areas during AI processing
 """
 from __future__ import annotations
 import asyncio
 import os
+import traceback
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, QRunnable, QThreadPool, pyqtSlot, QObject, pyqtSignal
-from PyQt6.QtGui import QFont, QColor, QTextCursor, QKeySequence, QShortcut
+from PyQt6.QtCore import (
+    Qt, QTimer, QRunnable, QThreadPool, pyqtSlot, QObject, pyqtSignal,
+    QPropertyAnimation, QEasingCurve,
+)
+from PyQt6.QtGui import (
+    QFont, QColor, QTextCursor, QKeySequence, QShortcut, QPainter, QLinearGradient,
+)
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QLabel, QPushButton, QComboBox, QTextEdit,
     QPlainTextEdit, QTabWidget, QFrame, QFileDialog,
     QCheckBox, QMessageBox, QScrollArea, QSizePolicy, QProgressBar,
     QMenu, QApplication, QSpinBox, QGroupBox,
-    QListWidget, QListWidgetItem, QDialog, QDialogButtonBox, QLineEdit
+    QListWidget, QListWidgetItem, QDialog, QDialogButtonBox, QLineEdit,
+    QGraphicsOpacityEffect,
 )
 
 from core.models import (
@@ -23,6 +36,7 @@ from core.models import (
     ModelSourceType, PatchBlock, PatchStatus, ProjectContext,
     FileEntry, TokenBudget, LogLevel, LogEntry
 )
+from ui.i18n import tr  # Добавьте этот импорт
 from services.engine import (
     PatchEngine, PromptEngine, ContextCompressor,
     ModelManager, SherlockAnalyzer, SherlockRequest,
@@ -61,6 +75,209 @@ except ImportError:
 
 
 # ──────────────────────────────────────────────────────────
+#  DEBOUNCE UTILITY
+# ──────────────────────────────────────────────────────────
+
+class _Debounce:
+    """Debounce a callable — only fires after `delay_ms` of silence."""
+    def __init__(self, callback, delay_ms: int = 150):
+        self._callback = callback
+        self._timer = QTimer()
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(delay_ms)
+        self._timer.timeout.connect(self._fire)
+        self._args = ()
+        self._kwargs = {}
+
+    def __call__(self, *args, **kwargs):
+        self._args = args
+        self._kwargs = kwargs
+        self._timer.start()
+
+    def _fire(self):
+        self._callback(*self._args, **self._kwargs)
+
+    def cancel(self):
+        self._timer.stop()
+
+
+# ──────────────────────────────────────────────────────────
+#  TOAST NOTIFICATION
+# ──────────────────────────────────────────────────────────
+
+class ToastNotification(QFrame):
+    """
+    Non-blocking in-app notification that slides in from top-right
+    and auto-dismisses after a timeout.
+    """
+
+    def __init__(self, message: str, level: str = "error",
+                 duration_ms: int = 5000, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(380)
+        self.setMinimumHeight(40)
+        self.setMaximumHeight(120)
+
+        colors = {
+            "error":   (get_color("err"), "#2A0A0A"),
+            "warning": (get_color("warn"), "#2A1A0A"),
+            "info":    (get_color("ac"), "#0A1A2A"),
+            "success": (get_color("ok"), "#0A2A0A"),
+        }
+        fg, bg = colors.get(level, colors["info"])
+
+        self.setStyleSheet(
+            f"QFrame {{ background: {bg}; border: 1px solid {fg}44;"
+            f" border-radius: 8px; padding: 8px 12px; }}"
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 8, 12, 8)
+
+        icons = {"error": "❌", "warning": "⚠️", "info": "ℹ️", "success": "✅"}
+        icon_lbl = QLabel(icons.get(level, "ℹ️"))
+        icon_lbl.setStyleSheet("font-size: 16px; background: transparent; border: none;")
+        layout.addWidget(icon_lbl)
+
+        msg_lbl = QLabel(message)
+        msg_lbl.setWordWrap(True)
+        msg_lbl.setStyleSheet(
+            f"color: {fg}; font-size: 11px; background: transparent; border: none;"
+        )
+        layout.addWidget(msg_lbl, stretch=1)
+
+        btn_close = QPushButton("✕")
+        btn_close.setFixedSize(20, 20)
+        btn_close.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: none; color: {fg}; font-size: 12px; }}"
+            f"QPushButton:hover {{ color: {get_color('tx0')}; }}"
+        )
+        btn_close.clicked.connect(self._dismiss)
+        layout.addWidget(btn_close)
+
+        # Auto-dismiss timer
+        self._dismiss_timer = QTimer(self)
+        self._dismiss_timer.setSingleShot(True)
+        self._dismiss_timer.setInterval(duration_ms)
+        self._dismiss_timer.timeout.connect(self._dismiss)
+
+    def show_toast(self):
+        self.show()
+        self.raise_()
+        self._dismiss_timer.start()
+
+    def _dismiss(self):
+        self._dismiss_timer.stop()
+        try:
+            opacity = QGraphicsOpacityEffect(self)
+            self.setGraphicsEffect(opacity)
+            anim = QPropertyAnimation(opacity, b"opacity")
+            anim.setDuration(200)
+            anim.setStartValue(1.0)
+            anim.setEndValue(0.0)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            anim.finished.connect(self.deleteLater)
+            self._fade_anim = anim
+            anim.start()
+        except Exception:
+            self.deleteLater()
+
+
+class ToastManager:
+    """Manages toast positioning within a parent widget."""
+
+    def __init__(self, parent: QWidget):
+        self._parent = parent
+        self._toasts: list[ToastNotification] = []
+
+    def show(self, message: str, level: str = "error", duration_ms: int = 5000):
+        toast = ToastNotification(message, level, duration_ms, self._parent)
+        self._toasts = [t for t in self._toasts if t.isVisible()]
+        y_offset = 8
+        for t in self._toasts:
+            y_offset += t.height() + 6
+        toast.move(self._parent.width() - toast.width() - 12, y_offset)
+        toast.show_toast()
+        self._toasts.append(toast)
+
+    def reposition(self):
+        """Reposition all visible toasts (call on parent resize)."""
+        y_offset = 8
+        alive = []
+        for t in self._toasts:
+            if t.isVisible():
+                t.move(self._parent.width() - t.width() - 12, y_offset)
+                y_offset += t.height() + 6
+                alive.append(t)
+        self._toasts = alive
+
+
+# ──────────────────────────────────────────────────────────
+#  SKELETON SHIMMER LOADER
+# ──────────────────────────────────────────────────────────
+
+class SkeletonLoader(QWidget):
+    """Animated shimmer placeholder shown while AI is processing."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(80)
+        self._offset = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(30)  # ~33 FPS
+        self._timer.timeout.connect(self._tick)
+
+    def start(self):
+        self._offset = 0.0
+        self.show()
+        self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+        self.hide()
+
+    def _tick(self):
+        self._offset += 0.02
+        if self._offset > 2.0:
+            self._offset = 0.0
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        bg = QColor(get_color("bg2"))
+        shimmer = QColor(get_color("bd"))
+        w = self.width()
+        h = self.height()
+
+        # Draw 3 "skeleton" bars
+        bar_h = 12
+        bar_y_positions = [12, 34, 56]
+        bar_widths = [int(w * 0.7), int(w * 0.5), int(w * 0.6)]
+
+        for i, (y, bw) in enumerate(zip(bar_y_positions, bar_widths)):
+            # Base bar
+            painter.fillRect(16, y, bw, bar_h, bg)
+
+            # Shimmer gradient sweep
+            grad = QLinearGradient(0, 0, w, 0)
+            shimmer_pos = (self._offset + i * 0.15) % 2.0
+            if shimmer_pos < 1.0:
+                center = shimmer_pos
+                grad.setColorAt(max(0, center - 0.15), bg)
+                grad.setColorAt(center, shimmer)
+                grad.setColorAt(min(1.0, center + 0.15), bg)
+            else:
+                grad.setColorAt(0, bg)
+                grad.setColorAt(1, bg)
+
+            painter.fillRect(16, y, bw, bar_h, grad)
+
+        painter.end()
+
+
+# ──────────────────────────────────────────────────────────
 #  ASYNC WORKER
 # ──────────────────────────────────────────────────────────
 
@@ -70,9 +287,9 @@ class AiWorkerSignals(QObject):
     patches     = pyqtSignal(list)
     error       = pyqtSignal(str)
     status      = pyqtSignal(str)
-    new_variant = pyqtSignal(int, int)   # current, total — open a new bubble
-    script_line = pyqtSignal(str, str)   # line, stream ("OUT"/"ERR"/"SYS")
-    script_done = pyqtSignal(str, bool)  # summary, success
+    new_variant = pyqtSignal(int, int)
+    script_line = pyqtSignal(str, str)
+    script_done = pyqtSignal(str, bool)
 
 
 class AiWorker(QRunnable):
@@ -102,11 +319,14 @@ class PatchCard(QFrame):
     apply_requested   = pyqtSignal(object)
     reject_requested  = pyqtSignal(object)
     preview_requested = pyqtSignal(object)
+    undo_requested    = pyqtSignal(object)   # emits self (PatchCard)
 
     def __init__(self, patch: PatchBlock, index: int, parent=None):
         super().__init__(parent)
         self.patch = patch
         self._status = PatchStatus.PENDING
+        self._applied_version = None   # FileVersion stored after apply
+        self._applied_file: str = ""   # file path that was patched
         self.setObjectName("patchCard")
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self._build(index)
@@ -117,8 +337,7 @@ class PatchCard(QFrame):
         layout.setSpacing(8)
 
         hdr = QHBoxLayout()
-        num = QLabel(f"{tr("ПАТЧ #")}{idx + 1}")
-        num.setObjectName("sectionLabel")
+        num = QLabel(f"{tr('ПАТЧ #')}{idx + 1}")
         num.setObjectName("accentLabel")
         fp_text = Path(self.patch.file_path).name if self.patch.file_path else tr("текущий файл")
         fp = QLabel(fp_text)
@@ -161,14 +380,24 @@ class PatchCard(QFrame):
         ba.clicked.connect(self._do_apply)
         br = QPushButton(tr("✕ Отклонить")); br.setObjectName("dangerBtn"); br.setFixedWidth(110)
         br.clicked.connect(self._do_reject)
-        btn_row.addWidget(bp); btn_row.addWidget(ba); btn_row.addWidget(br)
+        bu = QPushButton(tr("↩ Откатить")); bu.setFixedWidth(100)
+        bu.setToolTip(tr("Восстановить файл к состоянию ДО этого патча"))
+        bu.setStyleSheet(
+            "QPushButton{background:#1A1A2E;border:1px solid #E0AF68;border-radius:4px;"
+            "color:#E0AF68;padding:2px 6px;font-size:11px;}"
+            "QPushButton:hover{background:#2A1A1A;border-color:#F7768E;color:#F7768E;}"
+        )
+        bu.hide()  # hidden until patch is APPLIED
+        bu.clicked.connect(self._do_undo)
+        btn_row.addWidget(bp); btn_row.addWidget(ba); btn_row.addWidget(br); btn_row.addWidget(bu)
         layout.addLayout(btn_row)
-        self._btn_apply = ba; self._btn_reject = br
+        self._btn_apply = ba; self._btn_reject = br; self._btn_undo = bu
 
     def _do_apply(self):  self.apply_requested.emit(self.patch)
     def _do_reject(self):
         self.reject_requested.emit(self.patch)
         self.set_status(PatchStatus.REJECTED)
+    def _do_undo(self):  self.undo_requested.emit(self)
 
     def set_status(self, status: PatchStatus, message: str = ""):
         self._status = status
@@ -182,6 +411,11 @@ class PatchCard(QFrame):
         self._status_lbl.setText(t + (f": {message[:50]}" if message else ""))
         if status in (PatchStatus.APPLIED, PatchStatus.REJECTED, PatchStatus.FAILED):
             self._btn_apply.setEnabled(False); self._btn_reject.setEnabled(False)
+        # Show undo button only for APPLIED patches that have a stored version
+        if status == PatchStatus.APPLIED and self._applied_version is not None:
+            self._btn_undo.show()
+        elif status != PatchStatus.APPLIED:
+            self._btn_undo.hide()
         bc_map = {PatchStatus.APPLIED:"#9ECE6A", PatchStatus.REJECTED:"#2E3148",
                   PatchStatus.FAILED:"#F7768E",  PatchStatus.PENDING:"#E0AF68"}
         bc = bc_map.get(status, "#2E3148")
@@ -194,7 +428,7 @@ class PatchCard(QFrame):
 
 class MainWindow(QMainWindow):
 
-    settings_changed = pyqtSignal(object)   # emitted after settings saved, passes AppSettings
+    settings_changed = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -216,27 +450,40 @@ class MainWindow(QMainWindow):
         self._project_mgr     = ProjectManager(self._logger)
         self._signal_monitor  = SignalMonitorWidget(self)
         self._script_runner   = ScriptRunner(self._logger)
-        self._auto_engine: AutoImproveEngine | None = None  # built after model ready
+        self._auto_engine: AutoImproveEngine | None = None
 
         # ── State ──
         self._settings: AppSettings = AppSettings()
         self._open_files: dict[str, str] = {}
         self._active_file: str | None = None
         self._patches: list[PatchCard] = []
+        self._patched_ranges: dict[str, list[dict]] = {}  # file → [{start, end, patch_id}]
         self._conversation: list[ChatMessage] = []
         self._is_processing = False
-        self._consensus_model_ids: list[str] = []   # for consensus model picker
+        self._consensus_model_ids: list[str] = []
         self._worker_signals = AiWorkerSignals()
         self._current_stream_edit: QPlainTextEdit | None = None
         self._pool = QThreadPool.globalInstance()
         self._pool.setMaxThreadCount(4)
 
-        # Pre-create status label so _build_auto_run_tab can connect to it
-        # (it gets added to the real status bar in _build_status_bar)
+        # ── Toast manager ──
+        self._toast_mgr: ToastManager | None = None  # init after setCentralWidget
+
+        # ── Debounced resize ──
+        self._debounced_resize = _Debounce(self._on_debounced_resize, 100)
+
+        # Pre-create status label
         self._lbl_status_left = QLabel(tr("Готов"))
         self._lbl_status_left.setObjectName("statusLabel")
 
+        # ── Global exception handler ──
+        self._install_exception_handler()
+
         self._build_ui()
+
+        # Init toast manager after central widget exists
+        self._toast_mgr = ToastManager(self.centralWidget())
+
         self._connect_signals()
         self._load_settings()
 
@@ -245,10 +492,28 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Shift+O"),self, self._open_project)
         QShortcut(QKeySequence("Ctrl+S"),      self, self._save_active_file)
 
-    # ══════════════════════════════════════════════════════
-    #  UI BUILD
-    # ══════════════════════════════════════════════════════
+    def _install_exception_handler(self):
+        """Install global exception hook that shows toast instead of crashing."""
+        import sys
+        self._original_excepthook = sys.excepthook
 
+        def _handle_exception(exc_type, exc_value, exc_tb):
+            if exc_type == KeyboardInterrupt:
+                self._original_excepthook(exc_type, exc_value, exc_tb)
+                return
+            msg = f"{exc_type.__name__}: {exc_value}"
+            # Log it
+            self._logger.error(msg, source="Global", exception=traceback.format_exc())
+            # Show toast if possible
+            try:
+                if self._toast_mgr:
+                    self._toast_mgr.show(msg[:200], "error", 8000)
+            except Exception:
+                pass
+            # Print to stderr as fallback
+            traceback.print_exception(exc_type, exc_value, exc_tb)
+
+        sys.excepthook = _handle_exception
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
@@ -426,7 +691,17 @@ class MainWindow(QMainWindow):
         lbl = QLabel(tr("КОД")); lbl.setObjectName("sectionLabel")
         self._lbl_active_file = QLabel(tr("нет файла"))
         self._lbl_active_file.setObjectName("accentLabel")
-        hl.addWidget(lbl); hl.addStretch(); hl.addWidget(self._lbl_active_file)
+
+        # Patch highlight toggle
+        self._chk_show_patches = QCheckBox(tr("🎨 Патчи"))
+        self._chk_show_patches.setToolTip(tr("Подсветить пропатченные блоки в редакторе"))
+        self._chk_show_patches.setFixedWidth(90)
+        self._chk_show_patches.setStyleSheet("QCheckBox{font-size:10px;}")
+        self._chk_show_patches.toggled.connect(self._on_toggle_patch_highlights)
+
+        hl.addWidget(lbl); hl.addStretch()
+        hl.addWidget(self._chk_show_patches)
+        hl.addWidget(self._lbl_active_file)
         layout.addWidget(hdr)
 
         # Context bar
@@ -496,6 +771,12 @@ class MainWindow(QMainWindow):
         scroll.setWidget(self._chat_container)
         self._chat_scroll = scroll
         layout.addWidget(scroll)
+
+        # Skeleton shimmer loader (shown during AI processing)
+        self._chat_skeleton = SkeletonLoader(w)
+        self._chat_skeleton.hide()
+        layout.addWidget(self._chat_skeleton)
+
         return w
 
     def _build_logs_tab(self) -> QWidget:
@@ -762,9 +1043,6 @@ class MainWindow(QMainWindow):
         self._btn_custom_strat = QPushButton(tr("✏ Свои"))
         self._btn_custom_strat.setFixedWidth(68)
         self._btn_custom_strat.setToolTip(tr("Выбрать кастомную стратегию из сохранённых"))
-        self._btn_custom_strat.setStyleSheet(
-            "QPushButton{background:#1E2030;border:1px solid #2E3148;border-radius:4px;color:#A9B1D6;padding:2px 6px;font-size:11px;}QPushButton:hover{background:#2E3148;color:#BB9AF7;}"
-        )
         self._btn_custom_strat.clicked.connect(self._pick_custom_strategy)
         self._active_custom_strategy: dict | None = None
         ai_row.addWidget(self._btn_custom_strat)
@@ -800,14 +1078,11 @@ class MainWindow(QMainWindow):
             pass
         ai_row.addWidget(self._cmb_consensus_mode)
 
-        # Model picker button — opens dialog to choose which models to use
+        # Model picker button
         self._btn_consensus_models = QPushButton(tr("⚙ Модели"))
         self._btn_consensus_models.setFixedWidth(80)
         self._btn_consensus_models.setVisible(False)
         self._btn_consensus_models.setToolTip(tr("Выбрать модели для консенсуса"))
-        self._btn_consensus_models.setStyleSheet(
-            "QPushButton{background:#1E2030;border:1px solid #2E3148;border-radius:4px;color:#A9B1D6;padding:2px 6px;font-size:11px;}QPushButton:hover{background:#2E3148;color:#CDD6F4;}"
-        )
         self._btn_consensus_models.clicked.connect(self._pick_consensus_models)
         ai_row.addWidget(self._btn_consensus_models)
 
@@ -880,20 +1155,24 @@ class MainWindow(QMainWindow):
         """Create a single file chip widget for the patch targets row."""
         chip = QFrame()
         chip.setFixedHeight(20)
+        
+        ac = get_color("ac"); bg1 = get_color("bg1"); bg2 = get_color("bg2")
+        bd = get_color("bd"); tx1 = get_color("tx1"); tx2 = get_color("tx2"); err = get_color("err")
+        
         if is_active:
             chip.setStyleSheet(
-                "QFrame{background:#1A2A3A;border:1px solid #7AA2F7;border-radius:4px;padding:0 2px;}"
+                f"QFrame{{background:{bg1};border:1px solid {ac};border-radius:4px;padding:0 2px;}}"
             )
         else:
             chip.setStyleSheet(
-                "QFrame{background:#1A1A2E;border:1px solid #BB9AF7;border-radius:4px;padding:0 2px;}"
+                f"QFrame{{background:{bg2};border:1px solid {bd};border-radius:4px;padding:0 2px;}}"
             )
         cl = QHBoxLayout(chip); cl.setContentsMargins(5, 0, 2, 0); cl.setSpacing(2)
 
         name = Path(path).name
         lbl = QLabel(name)
         lbl.setStyleSheet(
-            f"color:{'#7AA2F7' if is_active else '#BB9AF7'};"
+            f"color:{ac if is_active else tx1};"
             "font-size:10px;background:transparent;border:none;"
         )
         lbl.setToolTip(path)
@@ -903,7 +1182,7 @@ class MainWindow(QMainWindow):
             btn_x = QPushButton("×")
             btn_x.setFixedSize(14, 14)
             btn_x.setStyleSheet(
-                "QPushButton{background:transparent;border:none;color:#565f89;font-size:11px;padding:0;}QPushButton:hover{color:#F7768E;}"
+                f"QPushButton{{background:transparent;border:none;color:{tx2};font-size:11px;padding:0;}}QPushButton:hover{{color:{err};}}"
             )
             btn_x.setToolTip(f"Убрать {name} из целей патчинга")
             btn_x.clicked.connect(lambda _, p=path: self._remove_patch_target(p))
@@ -1072,12 +1351,14 @@ class MainWindow(QMainWindow):
                 strategies = []
 
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu{background:#1E2030;border:1px solid #2E3148;border-radius:6px;
-                  padding:4px;color:#CDD6F4;font-size:12px;}
-            QMenu::item{padding:7px 20px;border-radius:4px;}
-            QMenu::item:selected{background:#2E3148;}
-            QMenu::separator{background:#2E3148;height:1px;margin:4px 0;}
+        bg1 = get_color("bg1"); bd = get_color("bd")
+        tx0 = get_color("tx0"); sel = get_color("sel")
+        menu.setStyleSheet(f"""
+            QMenu{{background:{bg1};border:1px solid {bd};border-radius:6px;
+                  padding:4px;color:{tx0};font-size:12px;}}
+            QMenu::item{{padding:7px 20px;border-radius:4px;}}
+            QMenu::item:selected{{background:{sel};}}
+            QMenu::separator{{background:{bd};height:1px;margin:4px 0;}}
         """)
 
         # "None" option to clear
@@ -1113,16 +1394,12 @@ class MainWindow(QMainWindow):
             icon = strat.get("icon", "🎯")
             name = strat.get("name", "")
             self._btn_custom_strat.setText(f"{icon} {name[:8]}")
-            self._btn_custom_strat.setStyleSheet(
-                "QPushButton{background:#1A2A1A;border:1px solid #9ECE6A;border-radius:4px;color:#9ECE6A;padding:2px 6px;font-size:11px;}QPushButton:hover{background:#1E351E;}"
-            )
             self._btn_custom_strat.setToolTip(f"Кастомная стратегия: {name}\n{strat.get('description','')}")
         else:
             self._btn_custom_strat.setText(tr("✏ Свои"))
-            self._btn_custom_strat.setStyleSheet(
-                "QPushButton{background:#1E2030;border:1px solid #2E3148;border-radius:4px;color:#A9B1D6;padding:2px 6px;font-size:11px;}QPushButton:hover{background:#2E3148;color:#BB9AF7;}"
-            )
             self._btn_custom_strat.setToolTip(tr("Выбрать кастомную стратегию из сохранённых"))
+            
+        self._refresh_theme_styles()  # Применяем правильные динамические цвета
         total = len(self._settings.models)
         sel = len(self._consensus_model_ids) if self._consensus_model_ids else total
         self._btn_consensus_models.setText(f"⚙ {sel}/{total} {tr('мод.')}")
@@ -1145,8 +1422,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(info)
 
         lst = QListWidget()
+        bg2 = get_color("bg2"); bd = get_color("bd"); bd2 = get_color("bd2")
+        tx0 = get_color("tx0"); sel = get_color("sel")
         lst.setStyleSheet(
-            "QListWidget{background:#131722;border:1px solid #1E2030;border-radius:6px;}QListWidget::item{padding:6px 10px;border-bottom:1px solid #1A1E2E;}QListWidget::item:selected{background:#2E3148;}"
+            f"QListWidget{{background:{bg2};border:1px solid {bd};border-radius:6px;color:{tx0};}}"
+            f"QListWidget::item{{padding:6px 10px;border-bottom:1px solid {bd2};}}"
+            f"QListWidget::item:selected{{background:{sel};}}"
         )
         from PyQt6.QtWidgets import QListWidgetItem as LWI
         for m in self._settings.models:
@@ -1187,7 +1468,7 @@ class MainWindow(QMainWindow):
         self._lbl_patch_count = QLabel(tr("0 патчей"))
         self._lbl_patch_count.setObjectName("accentLabel")
         self._btn_apply_all = QPushButton(tr("✓ Все")); self._btn_apply_all.setObjectName("successBtn")
-        self._btn_apply_all.setFixedWidth(55); self._btn_apply_all.setToolTip(tr("Применить все"))
+        self._btn_apply_all.setMinimumWidth(80); self._btn_apply_all.setToolTip(tr("Применить все"))
         self._btn_apply_all.clicked.connect(self._apply_all_patches)
         btn_clr = QPushButton("✕"); btn_clr.setObjectName("dangerBtn")
         btn_clr.setFixedWidth(28); btn_clr.setToolTip(tr("Очистить список"))
@@ -1276,7 +1557,76 @@ class MainWindow(QMainWindow):
         # Register theme refresh so inline styles update when user switches theme
         register_theme_refresh(self._refresh_theme_styles)
 
+        # Register comprehensive language retranslation
+        register_listener(self._retranslate_all)
+
+    def _retranslate_all(self, _lang: str = ""):
+        """
+        Comprehensive live retranslation — called on every language change.
+        Covers ALL text in the main window: tabs, buttons, labels, tooltips, placeholders.
+        """
+        # ── Center tab labels ──
+        if hasattr(self, "_center_tabs"):
+            _tab_keys = [
+                tr("💬 Диалог"), tr("📋 Логи"), tr("📦 Контекст"),
+                tr("📡 Сигналы"), tr("⚡ Авто-запуск"),
+            ]
+            for i, text in enumerate(_tab_keys):
+                if i < self._center_tabs.count():
+                    self._center_tabs.setTabText(i, text)
+
+        # ── Toolbar buttons — walk all children ──
+        try:
+            retranslate_widget(self)
+        except Exception:
+            pass
+
+        # ── Static labels that use tr() ──
+        self._retranslate_static_labels(_lang)
+        self._retranslate_patches_panel(_lang)
+        self._retranslate_consensus_items()
+
+        # ── Input area ──
+        if hasattr(self, "_input_box"):
+            self._input_box.setPlaceholderText(
+                tr("Задай вопрос или опиши изменение...  (Ctrl+Enter — отправить)"))
+        if hasattr(self, "_btn_send"):
+            self._btn_send.setText(tr("▶ Отправить  Ctrl+↵"))
+        if hasattr(self, "_chk_include_file"):
+            self._chk_include_file.setText(tr("Активный файл"))
+        if hasattr(self, "_chk_include_logs"):
+            self._chk_include_logs.setText(tr("Логи ошибок"))
+        if hasattr(self, "_chk_include_all"):
+            self._chk_include_all.setText(tr("Весь проект (скелет)"))
+        if hasattr(self, "_chk_consensus"):
+            self._chk_consensus.setText(tr("🤝 Консенсус"))
+
+        # ── Title bar ──
+        if hasattr(self, "_lbl_mode"):
+            if self._btn_mode.isChecked():
+                self._lbl_mode.setText(tr("🆕 Новый проект"))
+                self._btn_mode.setText(tr("🆕 Новый"))
+            else:
+                self._lbl_mode.setText(tr("🔧 Режим патчей"))
+                self._btn_mode.setText(tr("🔧 Патчи"))
+
+        # ── Status bar ──
+        if hasattr(self, "_lbl_status_model"):
+            if self._model_manager.active_model:
+                self._lbl_status_model.setText(self._model_manager.active_model.display_name)
+            else:
+                self._lbl_status_model.setText(tr("нет модели"))
+
+        # ── Refresh token/file counts in current language ──
+        self._update_context_tokens()
+
     def _refresh_theme_styles(self):
+        # === КЛЮЧЕВОЕ: сброс кэша стилей Qt для скроллбаров ===
+        # Без этого скроллбары на активном виджете не обновляются при смене темы
+        app = QApplication.instance()
+        if app:
+            app.setStyle(app.style())  # полный сброс стиля приложения
+        
         ac   = get_color("ac")
         bg0  = get_color("bg0")
         bg1  = get_color("bg1")
@@ -1385,7 +1735,107 @@ class MainWindow(QMainWindow):
             p.setColor(QPalette.ColorRole.Window, __import__("PyQt6.QtGui", fromlist=["QColor"]).QColor(bg0))
             self._log_view.setPalette(p)
             self._log_view.viewport().update()
+        
+        # Custom strategy & Consensus models
+        if hasattr(self, "_btn_custom_strat"):
+            if getattr(self, "_active_custom_strategy", None):
+                self._btn_custom_strat.setStyleSheet(
+                    f"QPushButton{{background:{bg1};border:1px solid {ok};border-radius:4px;color:{ok};padding:2px 6px;font-size:11px;}}"
+                    f"QPushButton:hover{{background:{bg3};}}"
+                )
+            else:
+                self._btn_custom_strat.setStyleSheet(
+                    f"QPushButton{{background:{bg2};border:1px solid {bd};border-radius:4px;color:{tx1};padding:2px 6px;font-size:11px;}}"
+                    f"QPushButton:hover{{background:{bg3};color:{ac};}}"
+                )
 
+        if hasattr(self, "_btn_consensus_models"):
+            self._btn_consensus_models.setStyleSheet(
+                f"QPushButton{{background:{bg2};border:1px solid {bd};border-radius:4px;color:{tx1};padding:2px 6px;font-size:11px;}}"
+                f"QPushButton:hover{{background:{bg3};color:{tx0};}}"
+            )
+
+        # Обновляем чипсы "Патчить:" под новую тему
+        if hasattr(self, "_refresh_patch_target_chips"):
+            self._refresh_patch_target_chips()
+
+        # 1. Применяем стили для всех контекстных меню в приложении (включая FileTree и табы)
+        self.setStyleSheet(f"""
+            QMenu {{ background: {bg1}; border: 1px solid {bd}; border-radius: 6px; padding: 4px; color: {tx0}; font-size: 12px; }}
+            QMenu::item {{ padding: 7px 20px; border-radius: 4px; }}
+            QMenu::item:selected {{ background: {sel}; }}
+            QMenu::separator {{ background: {bd}; height: 1px; margin: 4px 0; }}
+        """)
+
+        # 2. Форсируем обновление всех редакторов после сброса стиля
+        if hasattr(self, "_file_tabs"):
+            for i in range(self._file_tabs.count()):
+                w = self._file_tabs.widget(i)
+                
+                # Получаем QPlainTextEdit из CodeEditorPanel или используем w напрямую
+                target = None
+                if hasattr(w, "editor"):
+                    # CodeEditorPanel - берем внутренний QPlainTextEdit
+                    target = w.editor
+                elif isinstance(w, QPlainTextEdit):
+                    target = w
+                
+                if not target:
+                    continue
+                
+                # Сохраняем позицию скролла
+                v_val = target.verticalScrollBar().value()
+                h_val = target.horizontalScrollBar().value()
+                
+                # Принудительно пересоздаём палитру и стиль
+                from PyQt6.QtGui import QPalette, QColor
+                p = target.palette()
+                p.setColor(QPalette.ColorRole.Base, QColor(get_color("bg0")))
+                p.setColor(QPalette.ColorRole.Text, QColor(get_color("tx0")))
+                target.setPalette(p)
+                
+                # Обновляем
+                target.style().unpolish(target)
+                target.style().polish(target)
+                target.viewport().update()
+                target.update()
+                
+                # Восстанавливаем позицию
+                target.verticalScrollBar().setValue(v_val)
+                target.horizontalScrollBar().setValue(h_val)
+                
+        # === Пересоздаём активный таб для обновления скроллбара ===
+        if hasattr(self, "_file_tabs"):
+            current_idx = self._file_tabs.currentIndex()
+            if current_idx >= 0:
+                w = self._file_tabs.widget(current_idx)
+                path = self._file_tabs.tabToolTip(current_idx)
+                
+                # Только для CodeEditorPanel (проверяем наличие editor)
+                if hasattr(w, "editor") and path:
+                    # Сохраняем состояние
+                    editor = w.editor
+                    v_scroll = editor.verticalScrollBar().value()
+                    h_scroll = editor.horizontalScrollBar().value()
+                    cursor_pos = editor.textCursor().position()
+                    content = editor.toPlainText()
+                    
+                    # Удаляем старый таб
+                    self._file_tabs.removeTab(current_idx)
+                    if path in self._open_files:
+                        del self._open_files[path]
+                    
+                    # Пересоздаём (это применит новые стили)
+                    self._load_file(path)
+                    
+                    # Восстанавливаем позицию
+                    new_w = self._file_tabs.widget(current_idx)
+                    if hasattr(new_w, "editor"):
+                        new_w.editor.verticalScrollBar().setValue(v_scroll)
+                        new_w.editor.horizontalScrollBar().setValue(h_scroll)
+                        c = new_w.editor.textCursor()
+                        c.setPosition(min(cursor_pos, len(content)))
+                        new_w.editor.setTextCursor(c)
     # ══════════════════════════════════════════════════════
     #  INITIALIZATION
     # ══════════════════════════════════════════════════════
@@ -1763,6 +2213,9 @@ class MainWindow(QMainWindow):
 
     def _on_ai_chunk(self, token: str):
         if self._current_stream_edit and token:
+            # Stop skeleton loader on first real token
+            if hasattr(self, '_chat_skeleton') and self._chat_skeleton.isVisible():
+                self._chat_skeleton.stop()
             cursor = self._current_stream_edit.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertText(token)
@@ -1771,7 +2224,10 @@ class MainWindow(QMainWindow):
                 self._chat_scroll.verticalScrollBar().maximum())
 
     def _on_ai_finished(self, full: str):
-        # If the streaming bubble is empty (AI sent nothing useful), show a fallback message
+        # Stop skeleton loader
+        if hasattr(self, '_chat_skeleton') and self._chat_skeleton.isVisible():
+            self._chat_skeleton.stop()
+        # If the streaming bubble is empty, show fallback
         if self._current_stream_edit is not None:
             current_text = self._current_stream_edit.toPlainText().strip()
             if not current_text and full.strip():
@@ -1800,6 +2256,9 @@ class MainWindow(QMainWindow):
         self._set_processing(False)
         self._add_error_message(err)
         self._logger.error(err, source="AI")
+        # Show toast notification
+        if self._toast_mgr:
+            self._toast_mgr.show(err[:200], "error", 6000)
 
     def _on_status_update(self, msg: str):
         self._lbl_status_left.setText(msg)
@@ -1975,6 +2434,7 @@ class MainWindow(QMainWindow):
         card.apply_requested.connect(self._apply_patch)
         card.reject_requested.connect(lambda p: None)
         card.preview_requested.connect(self._preview_patch)
+        card.undo_requested.connect(self._undo_patch)
         count = self._patches_layout.count()
         self._patches_layout.insertWidget(count - 1, card)
         self._patches.append(card)
@@ -2127,6 +2587,13 @@ class MainWindow(QMainWindow):
             # Refresh editor if this is the currently visible file
             if target_file == self._active_file:
                 self._refresh_editor_content(patched)
+                
+                # ⬇️ ВСТАВИТЬ ЭТО: сбросить флаг модификации после патча
+                w = self._file_tabs.currentWidget()
+                if hasattr(w, "editor"):
+                    w.editor.document().setModified(False)
+                elif hasattr(w, "document"):
+                    w.document().setModified(False)
 
             with open(target_file, "w", encoding="utf-8") as f:
                 f.write(patched)
@@ -2141,7 +2608,13 @@ class MainWindow(QMainWindow):
                     patch_replace=clean_patch.replace_content)
 
             for c in self._patches:
-                if c.patch is patch: c.set_status(PatchStatus.APPLIED)
+                if c.patch is patch:
+                    c._applied_version = version
+                    c._applied_file = target_file
+                    c.set_status(PatchStatus.APPLIED)
+
+            # Track patched line ranges for highlight feature
+            self._record_patched_range(target_file, content, patched, clean_patch)
 
             name = Path(target_file).name
             self._add_system_message(f"✅ {tr('Патч применён')} → `{name}` ({tr('резервная копия сохранена')})")
@@ -2164,6 +2637,127 @@ class MainWindow(QMainWindow):
         self._patches.clear()
         self._lbl_patch_count.setText(tr("0 патчей"))
         self._empty_patches.show()
+
+    def _undo_patch(self, card: PatchCard):
+        """Undo a single applied patch by restoring from its backup version."""
+        version = card._applied_version
+        target_file = card._applied_file
+        if not version or not target_file:
+            self._add_error_message(tr("Нет данных для отката — версия не сохранена."))
+            return
+
+        reply = QMessageBox.question(
+            self, tr("Откатить патч"),
+            f"{tr('Восстановить файл к состоянию ДО этого патча?')}\n\n"
+            f"Файл: {Path(target_file).name}\n"
+            f"Версия: {version.display_time}\n"
+            f"Описание: {version.description}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            restored_content = self._version_ctrl.restore_version(version)
+            self._open_files[target_file] = restored_content
+            if target_file == self._active_file:
+                self._refresh_editor_content(restored_content)
+                
+                # ⬇️ ВСТАВИТЬ ЭТО: сбросить флаг модификации после отката
+                w = self._file_tabs.currentWidget()
+                if hasattr(w, "editor"):
+                    w.editor.document().setModified(False)
+                elif hasattr(w, "document"):
+                    w.document().setModified(False)
+            with open(target_file, "w", encoding="utf-8") as f:
+                f.write(restored_content)
+
+            # Update card status
+            card._status = PatchStatus.PENDING
+            card._status_lbl.setStyleSheet("font-size:11px;color:#E0AF68;")
+            card._status_lbl.setText(tr("↩ откачен"))
+            card._btn_undo.hide()
+            card._btn_apply.setEnabled(True)
+            card._btn_reject.setEnabled(True)
+            card.setStyleSheet("PatchCard { border-left: 3px solid #E0AF68; }")
+
+            # Remove patched ranges for this file
+            if hasattr(self, '_patched_ranges') and target_file in self._patched_ranges:
+                self._patched_ranges[target_file] = [
+                    r for r in self._patched_ranges[target_file]
+                    if r.get("patch_id") != id(card.patch)
+                ]
+                self._update_patched_highlights()
+
+            name = Path(target_file).name
+            self._add_system_message(
+                f"↩ {tr('Патч откачен')} → `{name}` ({tr('файл восстановлен к')} {version.display_time})")
+            self._update_context_tokens()
+
+        except Exception as e:
+            self._add_error_message(f"{tr('Ошибка отката')}: {e}")
+
+    def _record_patched_range(self, file_path: str, old_content: str,
+                              new_content: str, patch: PatchBlock):
+        """Record which lines were changed by a patch for highlight feature."""
+        if not hasattr(self, '_patched_ranges'):
+            self._patched_ranges = {}
+        if file_path not in self._patched_ranges:
+            self._patched_ranges[file_path] = []
+
+        # Find the line range of the replacement in the new content
+        replace_text = patch.replace_content
+        if not replace_text:
+            return
+        idx = new_content.find(replace_text)
+        if idx < 0:
+            return
+        start_line = new_content[:idx].count('\n') + 1  # 1-based
+        end_line = start_line + replace_text.count('\n')
+        self._patched_ranges[file_path].append({
+            "start": start_line,
+            "end": end_line,
+            "patch_id": id(patch),
+            "description": patch.description or "",
+        })
+        # Update highlights if the patched file is currently active
+        self._update_patched_highlights()
+
+    def _update_patched_highlights(self):
+        """Push patched line ranges to the active editor if toggle is ON."""
+        if not hasattr(self, '_chk_show_patches'):
+            return
+        if not self._chk_show_patches.isChecked():
+            return
+        if not self._active_file:
+            return
+        # Find the panel for the active file in _file_tabs
+        panel = None
+        for i in range(self._file_tabs.count()):
+            w = self._file_tabs.widget(i)
+            if hasattr(w, 'editor') and hasattr(w, 'file_path'):
+                if w.file_path == self._active_file:
+                    panel = w
+                    break
+        if panel is None:
+            return
+        ranges = self._patched_ranges.get(self._active_file, [])
+        line_set = set()
+        for r in ranges:
+            for ln in range(r["start"], r["end"] + 1):
+                line_set.add(ln)
+        panel.editor.set_patched_lines(line_set)
+
+    def _on_toggle_patch_highlights(self, checked: bool):
+        """Called when the '🎨 Патчи' checkbox is toggled."""
+        if checked:
+            self._update_patched_highlights()
+        else:
+            # Clear highlights from all open editors
+            for i in range(self._file_tabs.count()):
+                w = self._file_tabs.widget(i)
+                if hasattr(w, 'editor'):
+                    w.editor.clear_patched_lines()
 
     def _preview_patch(self, patch: PatchBlock):
         dlg = PatchPreviewDialog(
@@ -2278,8 +2872,8 @@ class MainWindow(QMainWindow):
         lst = QListWidget()
         lst.setStyleSheet(
             f"QListWidget{{background:{get_color('bg2')};border:1px solid {get_color('bd2')};border-radius:6px;}}"
-            f"QListWidget::item{{padding:4px 10px;border-bottom:1px solid {get_color('bd2')};}}",
-            f"QListWidget::item:selected{{background:{get_color('sel')};}}",
+            f"QListWidget::item{{padding:4px 10px;border-bottom:1px solid {get_color('bd2')};}}"
+            f"QListWidget::item:selected{{background:{get_color('sel')};}}"
         )
 
         root = Path(all_files[0]).parent if all_files else Path(".")
@@ -2379,6 +2973,10 @@ class MainWindow(QMainWindow):
                 lambda ln, col: self._lbl_status_right.setText(f"Ln {ln}, Col {col}"))
             panel.editor.syntax_errors_changed.connect(
                 lambda errs, p=path: self._on_syntax_errors(p, errs))
+            
+            # ⬇️ ВСТАВИТЬ ЭТО: сбросить флаг модификации после загрузки
+            panel.editor.document().setModified(False)
+            
         except Exception:
             # Fallback: plain QPlainTextEdit
             from PyQt6.QtWidgets import QPlainTextEdit
@@ -2388,6 +2986,9 @@ class MainWindow(QMainWindow):
             panel.setPlainText(content)
             panel.setStyleSheet(f"background:{get_color('bg0')};color:{get_color('tx0')};border:none;")
             panel.textChanged.connect(lambda: self._on_tab_modified(path, True))
+            
+            # ⬇️ И СЮДА ТОЖЕ:
+            panel.document().setModified(False)
 
         name = Path(path).name
         idx = self._file_tabs.addTab(panel, name)
@@ -2529,6 +3130,13 @@ class MainWindow(QMainWindow):
             name = Path(path).name
             self._file_tabs.setTabText(idx, name)
             self._file_tabs.tabBar().setTabTextColor(idx, QColor())  # reset error color
+            
+            # ⬇️ ВСТАВИТЬ ЭТО: сбросить флаг модификации
+            if hasattr(w, "editor"):
+                w.editor.document().setModified(False)
+            elif hasattr(w, "document"):
+                w.document().setModified(False)
+                
         except Exception as e:
             self._add_error_message(f"Ошибка сохранения {Path(path).name}: {e}")
 
@@ -2599,6 +3207,8 @@ class MainWindow(QMainWindow):
                 # Sync content from widget
                 self._open_files[path] = self._get_editor_content(path)
                 self._refresh_patch_target_chips()
+                # Refresh patch highlights for the new active file
+                self._update_patched_highlights()
 
     def _switch_to_tab(self, path: str):
         for i in range(self._file_tabs.count()):
@@ -2848,6 +3458,14 @@ class MainWindow(QMainWindow):
         self._open_files[path] = content
         if path == self._active_file:
             self._refresh_editor_content(content)
+            
+            # ⬇️ ВСТАВИТЬ ЭТО: сбросить флаг модификации
+            w = self._file_tabs.currentWidget()
+            if hasattr(w, "editor"):
+                w.editor.document().setModified(False)
+            elif hasattr(w, "document"):
+                w.document().setModified(False)
+                
         self._add_system_message(f"⏪ `{Path(path).name}` {tr('восстановлен к предыдущей версии.')}")
 
     def _open_error_map(self):
@@ -2880,10 +3498,20 @@ class MainWindow(QMainWindow):
                 accent=getattr(s, "accent_color", "#7AA2F7"),
                 font_size=getattr(s, "ui_font_size", 11),
                 theme=getattr(s, "theme", "dark"),
+                animate=False,                   # диалог ещё открыт — без скриншот-оверлея
             )
             apply_font(getattr(s, "ui_font_size", 11))
+            self._refresh_theme_styles()          # сразу обновить inline-стили главного окна
         except Exception:
             pass
+        try:
+            from ui.i18n import set_language      # применить язык и уведомить все слушатели
+            lang = getattr(s, "language", None)
+            if lang:
+                set_language(lang)
+        except Exception:
+            pass
+        QTimer.singleShot(0, self.update)         # форсировать перерисовку в следующем тике
         self.settings_changed.emit(s)
         self._add_system_message(tr("✅ Настройки сохранены"))
 
@@ -2962,11 +3590,17 @@ class MainWindow(QMainWindow):
         if active:
             self._lbl_processing.setText(f"⟳ {message}")
             if create_bubble:
+                # Show skeleton loader
+                if hasattr(self, '_chat_skeleton'):
+                    self._chat_skeleton.start()
                 # Add streaming bubble and switch to conversation tab
                 self._current_stream_edit = self._add_assistant_message_streaming()
                 self._center_tabs.setCurrentIndex(0)
         else:
             self._lbl_status_left.setText(tr("Готов"))
+            # Stop skeleton loader
+            if hasattr(self, '_chat_skeleton'):
+                self._chat_skeleton.stop()
 
     def _stop_processing(self):
         self._pool.clear()
@@ -3030,7 +3664,47 @@ class MainWindow(QMainWindow):
     #  WINDOW LIFECYCLE
     # ══════════════════════════════════════════════════════
 
+    def resizeEvent(self, event):
+        """Debounced resize — prevents lag during window resizing."""
+        super().resizeEvent(event)
+        # Reposition toasts immediately (lightweight)
+        if self._toast_mgr:
+            self._toast_mgr.reposition()
+        # Debounce heavier layout updates
+        self._debounced_resize()
+
+    def _on_debounced_resize(self):
+        """Called after resize settles — refresh heavy UI elements."""
+        try:
+            self._update_context_tokens()
+        except Exception:
+            pass
+
     def closeEvent(self, event):
+        """Handle application close event."""
+        if self._has_unsaved_changes():
+            unsaved_files = "\n".join(self._get_unsaved_files_list())
+            # Используем функцию tr() для локализации заголовка и тела сообщения
+            title = tr("Несохранённые изменения")
+            body_intro = tr("У вас есть несохранённые изменения в следующих файлах:")
+            body_question = tr("Сохранить перед выходом?")
+            
+            msg = f"{body_intro}\n\n{unsaved_files}\n\n{body_question}"
+            
+            reply = QMessageBox.question(
+                self, title, msg,
+                QMessageBox.StandardButton.Save | 
+                QMessageBox.StandardButton.Discard | 
+                QMessageBox.StandardButton.Cancel
+            )
+            
+            if reply == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            elif reply == QMessageBox.StandardButton.SaveAll:
+                self._save_all_unsaved()
+        
+        # Save settings and exit
         geo = self.geometry()
         self._settings.window_geometry = {
             "x": geo.x(), "y": geo.y(),
@@ -3039,3 +3713,36 @@ class MainWindow(QMainWindow):
         self._model_manager.save(self._settings)
         self._signal_monitor.stop()
         event.accept()
+    
+    def _has_unsaved_changes(self) -> bool:
+        """Check if any open file has unsaved changes."""
+        for i in range(self._file_tabs.count()):
+            w = self._file_tabs.widget(i)
+            is_mod = (w.is_modified if hasattr(w, "is_modified") else
+                      w.document().isModified() if hasattr(w, "document") else False)
+            if is_mod:
+                return True
+        return False
+
+    def _save_all_unsaved(self) -> bool:
+        """Save all unsaved files. Returns True if successful."""
+        for i in range(self._file_tabs.count()):
+            w = self._file_tabs.widget(i)
+            is_mod = (w.is_modified if hasattr(w, "is_modified") else
+                      w.document().isModified() if hasattr(w, "document") else False)
+            if is_mod:
+                self._save_tab(i)
+        return True
+
+    def _get_unsaved_files_list(self) -> list[str]:
+        """Get list of unsaved file names."""
+        unsaved = []
+        for i in range(self._file_tabs.count()):
+            w = self._file_tabs.widget(i)
+            is_mod = (w.is_modified if hasattr(w, "is_modified") else
+                      w.document().isModified() if hasattr(w, "document") else False)
+            if is_mod:
+                path = self._file_tabs.tabToolTip(i)
+                name = Path(path).name if path else f"файл {i+1}"
+                unsaved.append(name)
+        return unsaved
