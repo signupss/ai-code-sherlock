@@ -237,6 +237,10 @@ class PipelineConfig:
     # Multi-AI consensus
     consensus: "ConsensusConfig | None" = None
 
+    # Patch target files — extra files AI can patch besides primary scripts
+    # Each entry: {"path": str, "rel": str, "group": str}
+    patch_only_files: list[dict] = field(default_factory=list)
+
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
 
     @property
@@ -279,6 +283,7 @@ class PipelineConfig:
             "metric_patterns": self.metric_patterns,
             "custom_strategy": self.custom_strategy.to_dict() if self.custom_strategy else None,
             "consensus": self.consensus.to_dict() if self.consensus else None,
+            "patch_only_files": self.patch_only_files,
         }
 
     @classmethod
@@ -312,6 +317,7 @@ class PipelineConfig:
             metric_patterns=d.get("metric_patterns", []),
             custom_strategy=CustomStrategy.from_dict(cs_data) if cs_data else None,
             consensus=ConsensusConfig.from_dict(con_data) if con_data else None,
+            patch_only_files=d.get("patch_only_files", []),
         )
 
 

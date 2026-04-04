@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![PyQt6](https://img.shields.io/badge/UI-PyQt6-green.svg)](https://pypi.org/project/PyQt6/)
 [![Ollama](https://img.shields.io/badge/AI-Ollama%20%7C%20OpenAI%20%7C%20API-purple.svg)](https://ollama.ai)
-[![Version](https://img.shields.io/badge/version-2.3.1-brightgreen.svg)](https://github.com/signupss/ai-code-sherlock/releases)
+[![Version](https://img.shields.io/badge/version-3.0.0-brightgreen.svg)](https://github.com/signupss/ai-code-sherlock/releases)
 
 [🌐 Website](https://codesherlock.dev/) · [⬇ Download](https://github.com/signupss/ai-code-sherlock/releases/latest) · [📖 Docs](#-quick-start) · [🐛 Issues](https://github.com/signupss/ai-code-sherlock/issues)
 
@@ -20,9 +20,11 @@
 
 ## ✨ What is AI Code Sherlock?
 
-AI Code Sherlock is a desktop IDE assistant that works like a detective for your codebase. It uses local (Ollama) or cloud AI models to analyze errors, generate surgical patches, and run autonomous improvement pipelines — without ever rewriting your whole file.
+AI Code Sherlock is a desktop IDE assistant and **visual AI Workflow Constructor** that works like a detective for your codebase. It uses local (Ollama) or cloud AI models to analyze errors, generate surgical patches, and run autonomous improvement pipelines — without ever rewriting your whole file.
 
 **Key idea:** instead of regenerating entire files, the AI outputs only `[SEARCH_BLOCK] → [REPLACE_BLOCK]` patches — precise, reviewable, and safe.
+
+**v3.0 adds:** a fully visual drag-and-drop **Workflow Constructor** — build infinite-complexity AI agent pipelines with 50+ node types, browser/desktop automation, conditional logic, loops, and variables. No code required.
 
 ---
 
@@ -40,7 +42,15 @@ AI Code Sherlock is a desktop IDE assistant that works like a detective for your
 | ⏱️ **Version Control** | Every patch backed up automatically, one-click restore |
 | 🔄 **Universal File Reader** | Reads xlsx, parquet, numpy, pickle, HTML, JSON for AI context |
 | 🌍 **i18n** | Full English / Russian UI, switch live in Settings |
-| 🎨 **Themes** | 4 themes: Dark (Tokyo Night), Light, Monokai, Dracula + custom accent color |
+| 🎨 **Themes** | 4 UI themes (Dark, Light, Monokai, Dracula) + custom accent color, font size |
+| 🏗️ **Workflow Constructor** | Visual drag-and-drop AI agent pipeline builder — 50+ node types, unlimited complexity |
+| 🤖 **AI Agent Nodes** | Code Writer, Reviewer, Planner, Tester, Orchestrator, Patcher, Image Gen/Analyst, and more |
+| 🔀 **Automation Snippets** | If/Else, Loop, Switch, Variable Set, HTTP Request, Delay, Log, Notifications, JS Snippets |
+| 🌐 **Browser Automation** | Launch, click, screenshot, profile management — all as visual nodes |
+| 🖥️ **Desktop Automation** | Open programs, click by image, screenshot, run actions — all visual nodes |
+| 📋 **Lists & Tables** | Project-scoped lists and tables with file-backed persistence and runtime access |
+| 🔗 **Conditional Routing** | LLM router, conditional branches, fallback agents, retry with backoff |
+| 🧩 **Skill Registry** | Built-in and custom skills injected into agent system prompts automatically |
 | 🔄 **Infinite Loop Guard** | Auto-detects repeated errors in pipeline logs, kills process, rolls back, re-patches |
 | 📖 **Companion Scripts** | Add read-only context scripts to pipeline — AI sees them but never runs or patches them |
 | 🤝 **Consensus Engine** | Query multiple models simultaneously, pick the best answer |
@@ -303,46 +313,95 @@ Confidence: HIGH (92%) — stack trace unambiguous
 ## 🏗️ Architecture
 
 ```
-ai_code_sherlock/
-├── main.py                       # Entry point + stylesheet
-├── requirements.txt
-├── core/
-│   ├── models.py                 # Domain models (dataclasses)
-│   └── interfaces.py             # Abstract interfaces (ABC)
-├── services/
-│   ├── engine.py                 # PatchEngine, PromptEngine, ContextCompressor, ModelManager
-│   ├── auto_improve_engine.py    # Autonomous pipeline orchestrator
-│   ├── consensus_engine.py       # Multi-model consensus
-│   ├── error_map.py              # Persistent error database
-│   ├── log_compressor.py         # Smart log compression
-│   ├── file_converter.py         # Universal file → AI text converter
-│   ├── response_filter.py        # Unicode sanitizer
-│   ├── version_control.py        # File backup and restore
-│   ├── script_runner.py          # Async subprocess runner — 15+ languages, interactive stdin
-│   ├── settings_manager.py       # Atomic JSON settings
-│   ├── signal_watcher.py         # ZennoPoster folder monitor
-│   └── project_manager.py        # Project state, AST skeleton builder
-├── ui/
-│   ├── main_window.py            # Main 4-panel IDE window
-│   ├── i18n.py                   # EN/RU translations
-│   ├── theme_manager.py          # Dynamic QSS theming
-│   ├── panels/
-│   │   └── auto_run_panel.py     # Pipeline live-log panel
-│   ├── widgets/
-│   │   ├── code_editor.py        # Editor with line numbers + syntax highlight
-│   │   ├── syntax_highlighter.py
-│   │   └── file_tree.py          # Lazy-loading file explorer
-│   └── dialogs/
-│       ├── settings_dialog.py
-│       ├── patch_preview.py      # Before/after diff viewer
-│       ├── version_history.py    # Browse & restore file versions
-│       ├── error_map_dialog.py
-│       ├── pipeline_dialog.py
-│       └── new_project_wizard.py
-└── tests/
-    ├── test_all.py               # 55+ unit tests
-    ├── test_pipeline.py
-    └── test_new_services.py
+AI Code Sherlock/
+├── constructor/                        # ── Visual constructor (node-based logic/agent editor)
+│   ├── graphics/                       # Constructor graphical core (PyQt/PySide)
+│   │   ├── __init__.py
+│   │   ├── items.py                    # Visual items (nodes, connectors)
+│   │   ├── minimap.py                  # Minimap for navigating large schemas
+│   │   ├── scene.py                    # Graphical scene (canvas) of the editor
+│   │   └── view.py                     # Viewport (zoom and pan controls)
+│   ├── panels/                         # Constructor UI panels
+│   │   ├── __init__.py
+│   │   ├── properties.py               # Properties panel for the selected node/agent
+│   │   └── variables.py                # Global and local schema variables management
+│   ├── runtime/                        # Execution environment for visual schemas
+│   │   ├── __init__.py
+│   │   ├── debugger.py                 # Visual debugger (step-by-step node execution)
+│   │   └── engine.py                   # Execution engine for built schemas
+│   ├── __init__.py
+│   ├── browser_module.py               # Web automation integration module for the constructor
+│   ├── commands.py                     # Command pattern (Undo/Redo for constructor actions)
+│   ├── constants.py                    # ══════ Visual editor constants ══════
+│   ├── project_dashboard.py            # Dashboard for managing schemas and workflows
+│   └── project_manager.py              # Saving/loading constructor states
+├── core/                               # ── Application Core ──────────────────────────
+│   ├── __init__.py
+│   ├── interfaces.py                   # Abstract interfaces (ABC)
+│   └── models.py                       # Domain data models (dataclasses/pydantic)
+├── providers/                          # ── LLM API Providers ───────────────────────
+│   ├── __init__.py
+│   └── providers.py                    # API wrappers (OpenAI, Anthropic, local models)
+├── services/                           # ── Business logic and background services ───────────
+│   ├── __init__.py
+│   ├── agent_models.py                 # Logic models and prompts for custom AI agents
+│   ├── auto_improve_engine.py          # Autonomous code improvement pipeline orchestrator
+│   ├── consensus_engine.py             # Multi-LLM consensus system
+│   ├── engine.py                       # PatchEngine, PromptEngine, ContextCompressor, ModelManager
+│   ├── error_map.py                    # Persistent error database (knowledge accumulation)
+│   ├── file_converter.py               # Universal file to AI text converter
+│   ├── log_compressor.py               # Smart log compression to save tokens
+│   ├── logger_service.py               # Centralized logging service
+│   ├── pipeline_models.py              # Data models for execution pipelines
+│   ├── project_manager.py              # Project state, AST skeleton builder
+│   ├── providers.py                    # LLM provider request router
+│   ├── response_filter.py              # AI response sanitizer (unicode cleanup, code block parsing)
+│   ├── script_runner.py                # Async script runner (15+ languages, interactive stdin)
+│   ├── settings_manager.py             # Atomic JSON settings management
+│   ├── signal_watcher.py               # File system monitoring (incl. ZennoPoster folders)
+│   ├── skill_registry.py               # Registry of skills and tools for AI agents
+│   ├── version_control.py              # Local file backup and restore system
+│   └── workflow_runtime.py             # Runtime environment for complex multi-step tasks
+├── skill_example/						# Agent skill example files
+├── tests/                              # ── Automated Tests ─────────────────
+│   ├── __init__.py
+│   ├── test_all.py                     # 55+ unit tests (basic imports and core checks)
+│   ├── test_new_services.py            # Tests for new modules (agents, constructor)
+│   └── test_pipeline.py                # Pipeline integration tests
+├── ui/                                 # ── User Interface (UI) ──────────
+│   ├── dialogs/                        # Dialog windows
+│   │   ├── __init__.py
+│   │   ├── agent_constructor.py        # Main window for the AI agent creation wizard
+│   │   ├── agent_constructor1.py       # Step 1: Basic setup and agent role
+│   │   ├── agent_constructor2.py       # Step 2: Adding skills and permissions
+│   │   ├── agent_constructor3.py       # Step 3: Testing and saving the agent prompt
+│   │   ├── custom_strategy_editor.py   # Editor for custom refactoring strategies
+│   │   ├── error_map_dialog.py         # View and edit the error knowledge base
+│   │   ├── new_project_wizard.py       # New project creation wizard
+│   │   ├── patch_preview.py            # Diff viewer (before/after AI patch application)
+│   │   ├── pipeline_dialog.py          # Pipeline setup and execution
+│   │   ├── settings_dialog.py          # Global application settings
+│   │   └── version_history.py          # View and rollback local file versions
+│   ├── panels/                         # Main window dock panels
+│   │   ├── __init__.py
+│   │   └── auto_run_panel.py           # Real-time pipeline log viewing panel
+│   ├── styles/                         # UI Themes
+│   │   ├── __init__.py
+│   │   └── dark_theme.qss              # Dark theme (Qt Style Sheets)
+│   ├── widgets/                        # Custom widgets
+│   │   ├── __init__.py
+│   │   ├── code_editor.py              # Code editor (line numbers, syntax highlighting)
+│   │   ├── file_tree.py                # Project file manager with lazy-loading
+│   │   └── syntax_highlighter.py       # Syntax highlighting logic
+│   ├── __init__.py
+│   ├── i18n.py                         # Multilingual support (EN/RU localizations)
+│   ├── main_window.py                  # Main IDE application window with workspaces
+│   └── theme_manager.py                # Dynamic theme switching and application (QSS)
+├── main.py                             # ── Application Entry Point ─────────────────
+├── README.md                           # Project documentation
+├── requirements.txt                    # ── Core dependencies ───────────────
+├── run.bat                             # Windows startup script
+└── run.sh                              # Linux/macOS startup script
 ```
 
 ---
@@ -406,6 +465,22 @@ macOS:    ~/.ai_code_sherlock/settings.json
 ---
 
 ## 🔄 Changelog
+
+### v3.0.0 — Workflow Constructor
+- 🏗️ **Visual Workflow Constructor** — drag-and-drop canvas for building AI agent pipelines of any complexity
+- 🤖 **50+ Node Types** — AI agents (Code Writer, Reviewer, Planner, Tester, Orchestrator, Patcher, Image Gen/Analyst, Verifier, Custom) + automation snippets
+- 🔀 **Full Control Flow** — If/Condition, Switch, Loop, Variable Set, HTTP Request, Delay, Log Message, Notifications, JS Snippets
+- 🌐 **Browser Automation Nodes** — Launch browser, click, screenshot, profile operations — all as draggable nodes
+- 🖥️ **Desktop Program Automation** — Open program, click by image, screenshot, run actions — all visual
+- 📋 **Lists & Tables** — Project-level lists and tables with static/on_start/always load modes, file-backed
+- 🔗 **Smart Edge Routing** — LLM router, conditional branches, fallback agents, retry with exponential backoff
+- 🧩 **Skill Registry** — Built-in and user-created skills automatically injected into agent prompts
+- 🐛 **Breakpoints & Debugger** — Step-through execution, variable inspection, pause/resume/step
+- 🌍 **Globals** — Cross-thread global variables accessible from all workflow nodes
+- 🎨 **4 UI Themes** — Dark (Tokyo Night), Light, Monokai, Dracula + custom accent color
+- 🔁 **Infinite Loop Guard** — Auto-detects repeated pipeline errors, kills runaway process, rolls back
+- 📌 **Notes & Start Nodes** — Canvas annotations and workflow entry points
+- 🏷️ **Undo/Redo** — Full history for all canvas and property changes (Ctrl+Z / Ctrl+Y)
 
 ### v2.3.1
 - 🌍 **System i18n**: Added full localization for exit confirmation dialogs and "Unsaved Changes" warnings.

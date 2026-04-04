@@ -81,17 +81,17 @@ class FileTreeWidget(QWidget):
         hl.addWidget(lbl)
         hl.addStretch()
 
-        btn_open = QPushButton("📁")
-        btn_open.setObjectName("iconBtn")
-        btn_open.setToolTip(tr("Открыть папку проекта"))
-        btn_open.clicked.connect(self._pick_folder)
-        hl.addWidget(btn_open)
+        self._btn_open = QPushButton("📁")
+        self._btn_open.setObjectName("iconBtn")
+        self._btn_open.setToolTip(tr("Открыть папку проекта"))
+        self._btn_open.clicked.connect(self._pick_folder)
+        hl.addWidget(self._btn_open)
 
-        btn_refresh = QPushButton("↺")
-        btn_refresh.setObjectName("iconBtn")
-        btn_refresh.setToolTip(tr("Обновить"))
-        btn_refresh.clicked.connect(self._refresh)
-        hl.addWidget(btn_refresh)
+        self._btn_refresh = QPushButton("↺")
+        self._btn_refresh.setObjectName("iconBtn")
+        self._btn_refresh.setToolTip(tr("Обновить"))
+        self._btn_refresh.clicked.connect(self._refresh)
+        hl.addWidget(self._btn_refresh)
 
         layout.addWidget(hdr)
 
@@ -124,6 +124,9 @@ class FileTreeWidget(QWidget):
         # Apply theme-aware colors and register for live refresh
         self._apply_theme_styles()
         register_theme_refresh(self._apply_theme_styles)
+        
+        # Register for language changes
+        register_listener(self._retranslate)
 
     def _apply_theme_styles(self):
         """Rebuild all inline styles using the current palette."""
@@ -395,3 +398,26 @@ class FileTreeWidget(QWidget):
         if len(parts) > 3:
             return f".../{'/'.join(parts[-2:])}"
         return path[-max_len:]
+    
+        # ── Translation ───────────────────────────────────────
+
+    def _retranslate(self):
+        """Update all translatable strings when language changes."""
+        # Обновить placeholder поиска
+        self._search.setPlaceholderText(tr("Поиск файлов..."))
+        
+        # Обновить label корневой папки
+        if self._root_path:
+            short = self._truncate_path(self._root_path, 36)
+            self._root_label.setText(f"  {short}")
+        else:
+            self._root_label.setText(tr("Папка не открыта"))
+        
+        # Обновить tooltip кнопок
+        if hasattr(self, '_btn_open'):
+            self._btn_open.setToolTip(tr("Открыть папку проекта"))
+        if hasattr(self, '_btn_refresh'):
+            self._btn_refresh.setToolTip(tr("Обновить"))
+        
+        # Перерисовать дерево для обновления иконок/текстов
+        self._refresh()

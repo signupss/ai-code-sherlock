@@ -1,0 +1,13 @@
+{
+  "id": "skill_web_scrape",
+  "name": "Веб-скрапинг",
+  "icon": "🌐",
+  "category": "code",
+  "description": "Парсинг HTML страниц с помощью BeautifulSoup и requests",
+  "system_prompt": "Ты — эксперт по веб-скрапингу. Используй BeautifulSoup4 и requests. Обрабатывай исключения, уважай robots.txt, добавляй User-Agent. Возвращай структурированные данные в JSON.",
+  "example_input": "URL: https://example.com/products",
+  "example_output": "[{\"title\": \"Product 1\", \"price\": \"$10\"}]",
+  "required_tools": ["python", "requests", "bs4"],
+  "tags": ["scraping", "html", "parser"],
+  "version": "1.0"
+}

@@ -1122,6 +1122,42 @@ class AutoImproveEngine:
                             "Если не знаешь точный код — попроси: 'Покажи строки X-Y из файла'\n"
                         )
 
+        # Patch-only files (not executed, but AI can patch them)
+        patch_only = getattr(cfg, "patch_only_files", [])
+        if patch_only:
+            parts.append("## ДОПОЛНИТЕЛЬНЫЕ ФАЙЛЫ ДЛЯ ПАТЧИНГА\n")
+            parts.append(
+                "Эти файлы НЕ выполняются, но AI МОЖЕТ предлагать патчи для них.\n"
+                "Используй `[SEARCH_BLOCK]` / `[REPLACE_BLOCK]` как обычно.\n"
+            )
+            for entry in patch_only:
+                fpath = entry.get("path", "")
+                fname = Path(fpath).name if fpath else "?"
+                if fpath and Path(fpath).exists():
+                    content = Path(fpath).read_text(encoding="utf-8", errors="replace")
+                    token_est = TokenBudget.estimate_tokens(content)
+                    budget_for_extra = cfg.max_context_tokens // 5
+                    if token_est > budget_for_extra:
+                        compressed = _smart_compress_code(content)
+                        comp_tokens = TokenBudget.estimate_tokens(compressed)
+                        if comp_tokens <= budget_for_extra:
+                            parts.append(
+                                f"### `{fname}` (без коммент., {comp_tokens} tok):\n"
+                                f"```python\n{compressed}\n```\n"
+                            )
+                        else:
+                            from services.project_manager import PythonSkeletonExtractor
+                            skeleton = PythonSkeletonExtractor().extract(content)
+                            parts.append(
+                                f"### `{fname}` [СКЕЛЕТ, доп. файл]:\n"
+                                f"```python\n{skeleton}\n```\n"
+                            )
+                    else:
+                        parts.append(
+                            f"### `{fname}` [доп. файл для патчинга]:\n"
+                            f"```python\n{content}\n```\n"
+                        )
+
         # Companion / context scripts (read-only, never patched)
         if cfg.context_scripts:
             parts.append("## СОПУТСТВУЮЩИЕ СКРИПТЫ (только чтение — не патчить)\n")
@@ -1397,6 +1433,11 @@ SEARCH_BLOCK должен ТОЧНО совпадать с кодом файла
             for s in config.primary_scripts
             if s.allow_patching and Path(s.script_path).exists()
         }
+        # Also include patch-only files (not executed, but patchable)
+        for entry in getattr(config, "patch_only_files", []):
+            fpath = entry.get("path", "")
+            if fpath and Path(fpath).exists() and fpath not in patchable:
+                patchable[fpath] = Path(fpath).read_text(encoding="utf-8", errors="replace")
         versions_created = []
 
         for patch in patches:

@@ -1,0 +1,20 @@
+[
+  {
+    "id": "skill_sql_query",
+    "name": "SQL Запросы",
+    "icon": "🗄️",
+    "category": "data",
+    "description": "Создание и оптимизация SQL запросов",
+    "system_prompt": "Ты — SQL эксперт. Пиши оптимизированные запросы для PostgreSQL/MySQL. Используй EXPLAIN для анализа. Добавляй индексы где нужно.",
+    "tags": ["sql", "database", "query"]
+  },
+  {
+    "id": "skill_mongo_agg",
+    "name": "MongoDB Агрегации",
+    "icon": "🍃",
+    "category": "data", 
+    "description": "Создание pipeline агрегаций MongoDB",
+    "system_prompt": "Ты — MongoDB специалист. Пиши эффективные aggregation pipeline. Используй $match на начальных этапах, проекции для уменьшения данных.",
+    "tags": ["mongodb", "nosql", "aggregation"]
+  }
+]

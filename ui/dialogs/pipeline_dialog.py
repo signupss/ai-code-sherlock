@@ -1273,6 +1273,9 @@ class PipelineDialog(QDialog):
                                               filter="Scripts (*.py *.bat *.sh *.ps1);;All (*)")
         if path:
             sc = ScriptConfig(script_path=path, role=role)
+            # Контекстные файлы не должны патчиться по умолчанию
+            if role == ScriptRole.CONTEXT:
+                sc.allow_patching = False
             self._scripts.append(sc)
             self._refresh_script_table(); self._refresh_output_script_combo()
             self._script_table.setCurrentCell(len(self._scripts)-1, 0)

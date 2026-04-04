@@ -36,7 +36,6 @@ from core.models import (
     ModelSourceType, PatchBlock, PatchStatus, ProjectContext,
     FileEntry, TokenBudget, LogLevel, LogEntry
 )
-from ui.i18n import tr  # Добавьте этот импорт
 from services.engine import (
     PatchEngine, PromptEngine, ContextCompressor,
     ModelManager, SherlockAnalyzer, SherlockRequest,
@@ -51,6 +50,7 @@ from services.project_manager import ProjectManager, ProjectMode
 from services.signal_watcher import SignalMonitorWidget
 from services.auto_improve_engine import AutoImproveEngine
 from services.script_runner import ScriptRunner
+from services.skill_registry import SkillRegistry
 from ui.dialogs.settings_dialog import SettingsDialog
 from ui.dialogs.patch_preview import PatchPreviewDialog
 from ui.dialogs.version_history import VersionHistoryDialog
@@ -450,6 +450,7 @@ class MainWindow(QMainWindow):
         self._project_mgr     = ProjectManager(self._logger)
         self._signal_monitor  = SignalMonitorWidget(self)
         self._script_runner   = ScriptRunner(self._logger)
+        self._skill_registry  = SkillRegistry()
         self._auto_engine: AutoImproveEngine | None = None
 
         # ── State ──
@@ -557,7 +558,7 @@ class MainWindow(QMainWindow):
         self._lbl_mode.setObjectName("accentLabel")
         layout.addWidget(self._lbl_mode)
 
-        layout.addStretch()
+        layout.addStretch(1)   # левая пружина
 
         lbl = QLabel(tr("Модель:"))
         lbl.setObjectName("statusLabel")
@@ -578,6 +579,54 @@ class MainWindow(QMainWindow):
         btn_s.setToolTip(tr("Настройки"))
         btn_s.clicked.connect(self._open_settings)
         layout.addWidget(btn_s)
+
+        layout.addSpacing(6)
+
+        self._btn_forum = QPushButton(tr("💬 Форум"))
+        self._btn_forum.setFixedHeight(26)
+        self._btn_forum.setToolTip(tr("Открыть форум поддержки в браузере"))
+        self._btn_forum.setStyleSheet(f"""
+            QPushButton {{
+                background: {get_color('bg2')}; color: {get_color('ac')};
+                border: 1px solid {get_color('ac')}; border-radius: 4px;
+                font-size: 11px; padding: 0 8px;
+            }}
+            QPushButton:hover {{ background: {get_color('ac')}; color: #000; }}
+        """)
+        self._btn_forum.clicked.connect(lambda: __import__('webbrowser').open(
+            "https://codesherlock.dev/forum.html"))
+        layout.addWidget(self._btn_forum)
+
+        self._btn_support = QPushButton(tr("🛟 Поддержка"))
+        self._btn_support.setFixedHeight(26)
+        self._btn_support.setToolTip(tr("Открыть документацию и FAQ"))
+        self._btn_support.setStyleSheet(f"""
+            QPushButton {{
+                background: {get_color('bg2')}; color: {get_color('tx1')};
+                border: 1px solid {get_color('bd')}; border-radius: 4px;
+                font-size: 11px; padding: 0 8px;
+            }}
+            QPushButton:hover {{ background: {get_color('bg3')}; color: {get_color('tx0')}; }}
+        """)
+        self._btn_support.clicked.connect(lambda: __import__('webbrowser').open(
+            "https://github.com/signupss/ai-code-sherlock/issues"))
+        layout.addWidget(self._btn_support)
+
+        self._btn_donate = QPushButton(tr("❤ Донат"))
+        self._btn_donate.setFixedHeight(26)
+        self._btn_donate.setToolTip(tr("Поддержать разработку проекта"))
+        self._btn_donate.setStyleSheet(f"""
+            QPushButton {{
+                background: {get_color('bg2')}; color: #FF6B6B;
+                border: 1px solid #FF6B6B; border-radius: 4px;
+                font-size: 11px; padding: 0 8px;
+            }}
+            QPushButton:hover {{ background: #FF6B6B; color: #fff; font-weight: bold; }}
+        """)
+        self._btn_donate.clicked.connect(lambda: __import__('webbrowser').open(
+            "https://codesherlock.dev/#donate"))
+        layout.addWidget(self._btn_donate)
+
         return bar
 
     # ── Toolbar ────────────────────────────────────────────
@@ -633,6 +682,11 @@ class MainWindow(QMainWindow):
         self._btn_pipeline.setToolTip(tr("Настроить и запустить Auto-Improve Pipeline"))
         self._btn_pipeline.clicked.connect(self._open_pipeline_dialog)
         layout.addWidget(self._btn_pipeline)
+
+        self._btn_constructor = QPushButton(tr("🤖 Конструктор"))
+        self._btn_constructor.setToolTip(tr("Конструктор AI-агентов — визуальный редактор workflow"))
+        self._btn_constructor.clicked.connect(self._open_agent_constructor)
+        layout.addWidget(self._btn_constructor)
 
         btn_run_script = QPushButton(tr("▶ Запустить скрипт"))
         btn_run_script.setObjectName("successBtn")
@@ -1266,6 +1320,8 @@ class MainWindow(QMainWindow):
             val = self._cmb_chat_strategy.itemData(idx)
             if val:
                 desc = AI_STRATEGY_DESCRIPTIONS.get(AIStrategy(val), "")
+                # Переводим описание если доступно
+                desc = tr(desc) if desc else ""
                 # Truncate to fit
                 short = desc[:60] + "…" if len(desc) > 60 else desc
                 self._lbl_strat_desc.setText(short)
@@ -1513,6 +1569,17 @@ class MainWindow(QMainWindow):
             self._lbl_patch_count.setText(tr("0 патчей"))
         else:
             self._lbl_patch_count.setText(f"{count} {tr('патч(ей)')}")
+        
+        # Найти и обновить кнопку очистки (✕)
+        if hasattr(self, "_patches_container"):
+            parent = self._patches_container.parent()
+            while parent and not isinstance(parent, QFrame):
+                parent = parent.parent()
+            if parent:
+                for btn in parent.findChildren(QPushButton):
+                    if btn.text() == "✕" and btn.objectName() == "dangerBtn":
+                        btn.setToolTip(tr("Очистить список"))
+                        break
 
     # ── Status Bar ─────────────────────────────────────────
 
@@ -1559,6 +1626,9 @@ class MainWindow(QMainWindow):
 
         # Register comprehensive language retranslation
         register_listener(self._retranslate_all)
+        
+        # Принудительно вызвать один раз для инициализации
+        self._retranslate_all()
 
     def _retranslate_all(self, _lang: str = ""):
         """
@@ -1605,10 +1675,77 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_lbl_mode"):
             if self._btn_mode.isChecked():
                 self._lbl_mode.setText(tr("🆕 Новый проект"))
-                self._btn_mode.setText(tr("🆕 Новый"))
             else:
                 self._lbl_mode.setText(tr("🔧 Режим патчей"))
+        # Кнопка режима — отдельно, т.к. текст меняется в зависимости от состояния
+        if hasattr(self, "_btn_mode"):
+            if self._btn_mode.isChecked():
+                self._btn_mode.setText(tr("🆕 Новый"))
+            else:
                 self._btn_mode.setText(tr("🔧 Патчи"))
+
+        # ── Title bar: Модель label и кнопка настроек ──
+        if hasattr(self, "_cmb_model"):
+            # Сохраняем текущий выбор
+            current_data = self._cmb_model.currentData()
+            self._cmb_model.blockSignals(True)
+            # Перестраиваем список моделей с актуальными display_name
+            self._cmb_model.clear()
+            for m in self._settings.models:
+                self._cmb_model.addItem(m.display_name, m.id)
+            # Восстанавливаем выбор
+            if current_data:
+                for i in range(self._cmb_model.count()):
+                    if self._cmb_model.itemData(i) == current_data:
+                        self._cmb_model.setCurrentIndex(i)
+                        break
+            self._cmb_model.blockSignals(False)
+        
+        # Label "Модель:" в title bar
+        # Находим по objectName или перебором — проще пересоздать через _build_title_bar
+        # Но можно найти и обновить:
+        for lbl in self.findChildren(QLabel):
+            if lbl.objectName() == "" and lbl.text() in ["Модель:", "Model:"]:
+                lbl.setText(tr("Модель:"))
+
+        # ── Toolbar buttons (явное обновление) ──
+        if hasattr(self, "_btn_sherlock"):
+            self._btn_sherlock.setText(tr("🔍 Шерлок"))
+        if hasattr(self, "_btn_send_logs"):
+            self._btn_send_logs.setText(tr("📋 Логи→AI"))
+        if hasattr(self, "_btn_pipeline"):
+            self._btn_pipeline.setText(tr("⚡ Pipeline"))
+        if hasattr(self, "_btn_constructor"):
+            self._btn_constructor.setText(tr("🤖 Конструктор"))
+
+        # Кнопки в toolbar — находим по тексту или objectName
+        toolbar = None
+        for child in self.findChildren(QFrame):
+            if child.objectName() == "toolbar":
+                toolbar = child
+                break
+        
+        if toolbar:
+            for btn in toolbar.findChildren(QPushButton):
+                text = btn.text()
+                # Обновляем только кнопки без objectName (стандартные)
+                if btn.objectName() == "":
+                    if "Новый проект" in text or "New Project" in text:
+                        btn.setText(tr("📋 Новый проект"))
+                    elif "Открыть проект" in text or "Open Project" in text:
+                        btn.setText(tr("📁 Открыть проект"))
+                    elif "Файл" in text or text == "File":
+                        btn.setText(tr("📄 Файл"))
+                    elif "Сохранить" in text and "все" not in text.lower():
+                        btn.setText(tr("💾 Сохранить"))
+                    elif "История" in text or "History" in text:
+                        btn.setText(tr("⏪ История"))
+                    elif "Карта ошибок" in text or "Error Map" in text:
+                        btn.setText(tr("🗂 Карта ошибок"))
+                    elif "Запустить скрипт" in text or "Run Script" in text:
+                        btn.setText(tr("▶ Запустить скрипт"))
+                    elif "Логи" in text and "→" not in text:
+                        btn.setText(tr("📥 Логи"))
 
         # ── Status bar ──
         if hasattr(self, "_lbl_status_model"):
@@ -1616,9 +1753,69 @@ class MainWindow(QMainWindow):
                 self._lbl_status_model.setText(self._model_manager.active_model.display_name)
             else:
                 self._lbl_status_model.setText(tr("нет модели"))
+        if hasattr(self, "_lbl_status_right"):
+            self._lbl_status_right.setText(tr("Ln 1, Col 1"))
+        if hasattr(self, "_lbl_status_left"):
+            current = self._lbl_status_left.text()
+            if any(x in current for x in ["Готов", "Ready", "Ошибка", "Error"]):
+                self._lbl_status_left.setText(tr("Готов"))
+
+        # ── Input area: Strategy label ──
+        if hasattr(self, "_cmb_chat_strategy"):
+            # Перестроить items с иконками
+            current_strat = self._cmb_chat_strategy.currentData()
+            self._cmb_chat_strategy.blockSignals(True)
+            self._cmb_chat_strategy.clear()
+            try:
+                from services.pipeline_models import AIStrategy
+                _strat_icons = {
+                    "conservative": "🛡", "balanced": "⚖️", "aggressive": "🚀",
+                    "explorer": "🔭", "exploit": "💎", "safe_ratchet": "🔒",
+                    "hypothesis": "🔬", "ensemble": "🎭",
+                }
+                for s in AIStrategy:
+                    icon = _strat_icons.get(s.value, "●")
+                    self._cmb_chat_strategy.addItem(
+                        f"{icon} {s.value.replace('_', ' ').title()}", s.value
+                    )
+                # Восстановить выбор
+                for i in range(self._cmb_chat_strategy.count()):
+                    if self._cmb_chat_strategy.itemData(i) == current_strat:
+                        self._cmb_chat_strategy.setCurrentIndex(i)
+                        break
+            except Exception:
+                pass
+            self._cmb_chat_strategy.blockSignals(False)
+            # Обновить описание
+            self._on_chat_strategy_changed(self._cmb_chat_strategy.currentIndex())
+
+        # Strategy label
+        for lbl in self.findChildren(QLabel):
+            if lbl.objectName() == "statusLabel" and any(x in lbl.text() for x in ["Стратегия", "Strategy"]):
+                lbl.setText(tr("Стратегия:"))
+                break
+
+        # Custom strategy button
+        if hasattr(self, "_btn_custom_strat"):
+            if not getattr(self, "_active_custom_strategy", None):
+                self._btn_custom_strat.setText(tr("✏ Свои"))
+
+        # Variants label
+        for lbl in self.findChildren(QLabel):
+            if lbl.objectName() == "statusLabel" and any(x in lbl.text() for x in ["Вариантов", "Variants"]):
+                lbl.setText(tr("Вариантов:"))
+                break
+
+        # ── Patch targets row ──
+        if hasattr(self, "_pt_chips_widget"):
+            self._refresh_patch_target_chips()
 
         # ── Refresh token/file counts in current language ──
         self._update_context_tokens()
+        
+        # ── File Tree ──
+        if hasattr(self, '_file_tree') and self._file_tree:
+            self._file_tree._retranslate()
 
     def _refresh_theme_styles(self):
         # === КЛЮЧЕВОЕ: сброс кэша стилей Qt для скроллбаров ===
@@ -1753,6 +1950,23 @@ class MainWindow(QMainWindow):
             self._btn_consensus_models.setStyleSheet(
                 f"QPushButton{{background:{bg2};border:1px solid {bd};border-radius:4px;color:{tx1};padding:2px 6px;font-size:11px;}}"
                 f"QPushButton:hover{{background:{bg3};color:{tx0};}}"
+            )
+
+        # Кнопки шапки: Форум / Поддержка / Донат
+        if hasattr(self, "_btn_forum"):
+            self._btn_forum.setStyleSheet(
+                f"QPushButton{{background:{bg2};color:{ac};border:1px solid {ac};border-radius:4px;font-size:11px;padding:0 8px;}}"
+                f"QPushButton:hover{{background:{ac};color:#000;}}"
+            )
+        if hasattr(self, "_btn_support"):
+            self._btn_support.setStyleSheet(
+                f"QPushButton{{background:{bg2};color:{tx1};border:1px solid {bd};border-radius:4px;font-size:11px;padding:0 8px;}}"
+                f"QPushButton:hover{{background:{bg3};color:{tx0};}}"
+            )
+        if hasattr(self, "_btn_donate"):
+            self._btn_donate.setStyleSheet(
+                f"QPushButton{{background:{bg2};color:#FF6B6B;border:1px solid #FF6B6B;border-radius:4px;font-size:11px;padding:0 8px;}}"
+                f"QPushButton:hover{{background:#FF6B6B;color:#fff;font-weight:bold;}}"
             )
 
         # Обновляем чипсы "Патчить:" под новую тему
@@ -2587,8 +2801,8 @@ class MainWindow(QMainWindow):
             # Refresh editor if this is the currently visible file
             if target_file == self._active_file:
                 self._refresh_editor_content(patched)
-                
-                # ⬇️ ВСТАВИТЬ ЭТО: сбросить флаг модификации после патча
+
+                # Сбросить флаг модификации после патча
                 w = self._file_tabs.currentWidget()
                 if hasattr(w, "editor"):
                     w.editor.document().setModified(False)
@@ -2662,13 +2876,14 @@ class MainWindow(QMainWindow):
             self._open_files[target_file] = restored_content
             if target_file == self._active_file:
                 self._refresh_editor_content(restored_content)
-                
-                # ⬇️ ВСТАВИТЬ ЭТО: сбросить флаг модификации после отката
+
+                # Сбросить флаг модификации после отката
                 w = self._file_tabs.currentWidget()
                 if hasattr(w, "editor"):
                     w.editor.document().setModified(False)
                 elif hasattr(w, "document"):
                     w.document().setModified(False)
+
             with open(target_file, "w", encoding="utf-8") as f:
                 f.write(restored_content)
 
@@ -2805,17 +3020,18 @@ class MainWindow(QMainWindow):
                 f"{tr('В подпапках:')} <b>{len(sub_files)}</b><br><br>"
                 f"{tr('Открыть все файлы или только первые')} {default_limit}?"
             )
-            box = QMessageBox(self)
-            box.setWindowTitle(tr("Открыть файлы проекта"))
-            box.setText(msg)
-            box.setIcon(QMessageBox.Icon.Question)
-            btn_all  = box.addButton(f"{tr('Открыть все')} ({total})", QMessageBox.ButtonRole.AcceptRole)
-            btn_some = box.addButton(f"{tr('Только')} {default_limit}", QMessageBox.ButtonRole.NoRole)
-            btn_pick = box.addButton(tr("Выбрать..."), QMessageBox.ButtonRole.HelpRole)
-            box.addButton(tr("Отмена"), QMessageBox.ButtonRole.RejectRole)
-            box.exec()
+            self._msg_box_project = QMessageBox(self)
+            self._msg_box_project.setWindowTitle(tr("Открыть файлы проекта"))
+            self._msg_box_project.setText(msg)
+            self._msg_box_project.setIcon(QMessageBox.Icon.Question)
+            btn_all  = self._msg_box_project.addButton(f"{tr('Открыть все')} ({total})", QMessageBox.ButtonRole.AcceptRole)
+            btn_some = self._msg_box_project.addButton(f"{tr('Только')} {default_limit}", QMessageBox.ButtonRole.NoRole)
+            btn_pick = self._msg_box_project.addButton(tr("Выбрать..."), QMessageBox.ButtonRole.HelpRole)
+            self._msg_box_project.addButton(tr("Отмена"), QMessageBox.ButtonRole.RejectRole)
+            self._msg_box_project.exec()
 
-            clicked = box.clickedButton()
+            clicked = self._msg_box_project.clickedButton()
+            self._msg_box_project = None  # Очистить ссылку
             if clicked == btn_all:
                 load_all = True
                 files_to_load = all_files
@@ -2858,15 +3074,14 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dlg)
         layout.setSpacing(8)
 
-        info = QLabel(tr("Отметь файлы которые нужно открыть в редакторе:"))
-        info.setObjectName("statusLabel")
-        layout.addWidget(info)
+        self._dlg_file_info = QLabel(tr("Отметь файлы которые нужно открыть в редакторе:"))
+        self._dlg_file_info.setObjectName("statusLabel")
+        layout.addWidget(self._dlg_file_info)
 
         # Search filter
-        search = QLabel("")
-        from PyQt6.QtWidgets import QLineEdit as _LE
-        fld = _LE(); fld.setPlaceholderText(tr("Поиск файлов..."))
-        layout.addWidget(fld)
+        self._dlg_file_search = QLineEdit()
+        self._dlg_file_search.setPlaceholderText(tr("Поиск файлов..."))
+        layout.addWidget(self._dlg_file_search)
 
         from PyQt6.QtWidgets import QListWidget, QListWidgetItem
         lst = QListWidget()
@@ -2894,7 +3109,7 @@ class MainWindow(QMainWindow):
         def _filter(text):
             for it in items_all:
                 it.setHidden(text.lower() not in it.text().lower())
-        fld.textChanged.connect(_filter)
+        self._dlg_file_search.textChanged.connect(_filter)
 
         # Select all / none row
         sel_row = QHBoxLayout()
@@ -2914,12 +3129,19 @@ class MainWindow(QMainWindow):
         layout.addLayout(footer)
 
         if dlg.exec():
-            return [
+            result = [
                 items_all[i].data(Qt.ItemDataRole.UserRole)
                 for i in range(len(items_all))
                 if items_all[i].checkState() == Qt.CheckState.Checked
                 and not items_all[i].isHidden()
             ]
+            # Очистить ссылки
+            self._dlg_file_info = None
+            self._dlg_file_search = None
+            return result
+        # Очистить ссылки
+        self._dlg_file_info = None
+        self._dlg_file_search = None
         return []
 
     def _new_project(self):
@@ -2973,10 +3195,10 @@ class MainWindow(QMainWindow):
                 lambda ln, col: self._lbl_status_right.setText(f"Ln {ln}, Col {col}"))
             panel.editor.syntax_errors_changed.connect(
                 lambda errs, p=path: self._on_syntax_errors(p, errs))
-            
-            # ⬇️ ВСТАВИТЬ ЭТО: сбросить флаг модификации после загрузки
+
+            # Сбросить флаг модификации после загрузки
             panel.editor.document().setModified(False)
-            
+
         except Exception:
             # Fallback: plain QPlainTextEdit
             from PyQt6.QtWidgets import QPlainTextEdit
@@ -2986,8 +3208,8 @@ class MainWindow(QMainWindow):
             panel.setPlainText(content)
             panel.setStyleSheet(f"background:{get_color('bg0')};color:{get_color('tx0')};border:none;")
             panel.textChanged.connect(lambda: self._on_tab_modified(path, True))
-            
-            # ⬇️ И СЮДА ТОЖЕ:
+
+            # Сбросить флаг модификации после загрузки
             panel.document().setModified(False)
 
         name = Path(path).name
@@ -3130,13 +3352,13 @@ class MainWindow(QMainWindow):
             name = Path(path).name
             self._file_tabs.setTabText(idx, name)
             self._file_tabs.tabBar().setTabTextColor(idx, QColor())  # reset error color
-            
-            # ⬇️ ВСТАВИТЬ ЭТО: сбросить флаг модификации
+
+            # Сбросить флаг модификации
             if hasattr(w, "editor"):
                 w.editor.document().setModified(False)
             elif hasattr(w, "document"):
                 w.document().setModified(False)
-                
+
         except Exception as e:
             self._add_error_message(f"Ошибка сохранения {Path(path).name}: {e}")
 
@@ -3353,6 +3575,33 @@ class MainWindow(QMainWindow):
         dlg.pipeline_saved.connect(self._on_pipeline_start)
         dlg.exec()
 
+    def _open_agent_constructor(self):
+        """Open the visual AI Agent Constructor window with full integration."""
+        from ui.dialogs.agent_constructor import AgentConstructorWindow
+        
+        if not hasattr(self, "_constructor_window") or self._constructor_window is None:
+            self._constructor_window = AgentConstructorWindow(
+                settings=self._settings,
+                parent=None,
+                model_manager=self._model_manager,  # Передаем менеджер моделей
+                skill_registry=self._skill_registry,  # Общий реестр скиллов
+                project_manager=self._project_mgr,    # Менеджер проекта
+                logger=self._logger
+            )
+        
+        # Синхронизация моделей
+        self._constructor_window.set_available_models(self._settings.models)
+        
+        # Если есть открытый проект - загрузить его скиллы
+        if self._project_mgr.state and self._project_mgr.state.project_root:
+            self._constructor_window.load_project_skills(
+                self._project_mgr.state.project_root
+            )
+        
+        self._constructor_window.show()
+        self._constructor_window.raise_()
+        self._constructor_window.activateWindow()
+
     def _run_script_manually(self):
         """Run any script manually — streams live log to Logs tab, supports interactive stdin."""
         from PyQt6.QtWidgets import QFileDialog
@@ -3458,14 +3707,14 @@ class MainWindow(QMainWindow):
         self._open_files[path] = content
         if path == self._active_file:
             self._refresh_editor_content(content)
-            
-            # ⬇️ ВСТАВИТЬ ЭТО: сбросить флаг модификации
+
+            # Сбросить флаг модификации
             w = self._file_tabs.currentWidget()
             if hasattr(w, "editor"):
                 w.editor.document().setModified(False)
             elif hasattr(w, "document"):
                 w.document().setModified(False)
-                
+
         self._add_system_message(f"⏪ `{Path(path).name}` {tr('восстановлен к предыдущей версии.')}")
 
     def _open_error_map(self):
@@ -3509,6 +3758,9 @@ class MainWindow(QMainWindow):
             lang = getattr(s, "language", None)
             if lang:
                 set_language(lang)
+                # Принудительно вызвать перевод после смены языка
+                # (set_language уведомит слушателей, но на всякий случай)
+                QTimer.singleShot(100, self._retranslate_all)
         except Exception:
             pass
         QTimer.singleShot(0, self.update)         # форсировать перерисовку в следующем тике
@@ -3659,7 +3911,17 @@ class MainWindow(QMainWindow):
             f'<span style="color:#E0AF68;font-family:monospace;font-size:11px;">'
             f'&gt;&gt; {safe}</span>'
         )
+    
+    # ══════════════════════════════════════════════════════
+    #  LANGUAGE CHANGE EVENT
+    # ══════════════════════════════════════════════════════
 
+    def changeEvent(self, event):
+        """Handle system language change events."""
+        if event.type() == event.Type.LanguageChange:
+            self._retranslate_all()
+        super().changeEvent(event)
+    
     # ══════════════════════════════════════════════════════
     #  WINDOW LIFECYCLE
     # ══════════════════════════════════════════════════════
@@ -3684,26 +3946,25 @@ class MainWindow(QMainWindow):
         """Handle application close event."""
         if self._has_unsaved_changes():
             unsaved_files = "\n".join(self._get_unsaved_files_list())
-            # Используем функцию tr() для локализации заголовка и тела сообщения
             title = tr("Несохранённые изменения")
             body_intro = tr("У вас есть несохранённые изменения в следующих файлах:")
             body_question = tr("Сохранить перед выходом?")
-            
+
             msg = f"{body_intro}\n\n{unsaved_files}\n\n{body_question}"
-            
+
             reply = QMessageBox.question(
                 self, title, msg,
-                QMessageBox.StandardButton.Save | 
-                QMessageBox.StandardButton.Discard | 
+                QMessageBox.StandardButton.Save |
+                QMessageBox.StandardButton.Discard |
                 QMessageBox.StandardButton.Cancel
             )
-            
+
             if reply == QMessageBox.StandardButton.Cancel:
                 event.ignore()
                 return
-            elif reply == QMessageBox.StandardButton.SaveAll:
+            elif reply == QMessageBox.StandardButton.Save:
                 self._save_all_unsaved()
-        
+
         # Save settings and exit
         geo = self.geometry()
         self._settings.window_geometry = {

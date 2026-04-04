@@ -259,6 +259,11 @@ class AppSettings:
     accent_color: str = "#7AA2F7"   # primary accent (buttons, highlights)
     ui_font_size: int = 11          # global UI font point size
     language: str = "ru"            # "ru" | "en"
+    # ═══ Многопоточность (глобальные настройки) ═══
+    max_global_threads: int = 10          # Лимит для всех проектов
+    resource_monitoring: bool = True      # Мониторинг ресурсов
+    priority_interrupt: bool = False      # Прерывание по приоритету
+    reset_failures_on_add: bool = True    # Сброс неуспехов при +N
 
     def to_dict(self) -> dict:
         return {
