@@ -28,12 +28,18 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QInputDialog, QStyledItemDelegate,
     QStyle, QStyleOptionViewItem
 )
+try:
+    from ui.i18n import tr as _dashboard_tr
+except ImportError:
+    def _dashboard_tr(s): return s
 
 from constructor.project_manager import (
     ProjectExecutionManager, ProjectEntry, ProjectStatus,
     ThreadMode, StopCondition
 )
 
+def _tr(s):
+    return _dashboard_tr(s)
 
 # ══════════════════════════════════════════════════════════
 #  СТИЛИ
@@ -211,15 +217,17 @@ _STATUS_ICONS = {
     ProjectStatus.ERROR:     "❌",
 }
 
-_STATUS_LABELS = {
-    ProjectStatus.STOPPED:   "Остановлен",
-    ProjectStatus.QUEUED:    "В очереди",
-    ProjectStatus.RUNNING:   "Выполняется",
-    ProjectStatus.PAUSED:    "Пауза",
-    ProjectStatus.COMPLETED: "Выполнен",
-    ProjectStatus.SCHEDULED: "Запланирован",
-    ProjectStatus.ERROR:     "Ошибка",
-}
+def _get_status_labels():
+    return {
+        ProjectStatus.STOPPED:   _tr("Остановлен"),
+        ProjectStatus.QUEUED:    _tr("В очереди"),
+        ProjectStatus.RUNNING:   _tr("Выполняется"),
+        ProjectStatus.PAUSED:    _tr("Пауза"),
+        ProjectStatus.COMPLETED: _tr("Выполнен"),
+        ProjectStatus.SCHEDULED: _tr("Запланирован"),
+        ProjectStatus.ERROR:     _tr("Ошибка"),
+    }
+_STATUS_LABELS = _get_status_labels()
 
 
 # ══════════════════════════════════════════════════════════
@@ -237,7 +245,11 @@ class ProjectLaunchDialog(QDialog):
                  available_snippets: list[tuple[str, str]] = None,
                  parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"▶️ Запуск проекта: {entry.name}")
+        try:
+            from ui.i18n import tr as _tr
+        except ImportError:
+            _tr = lambda s: s
+        self.setWindowTitle(f"{_tr('▶️ Запуск проекта')}: {entry.name}")
         self.resize(560, 640)
         self.setStyleSheet(_DASHBOARD_STYLE)
         self._entry = entry
@@ -257,50 +269,50 @@ class ProjectLaunchDialog(QDialog):
         self._spn_threads = QSpinBox()
         self._spn_threads.setRange(1, 100)
         self._spn_threads.setToolTip(
-            "Сколько потоков одновременно выполняют этот проект.\n"
-            "Каждый поток — изолированный экземпляр workflow."
+            _tr("Сколько потоков одновременно выполняют этот проект.\n"
+            "Каждый поток — изолированный экземпляр workflow.")
         )
-        fl.addRow("Количество потоков:", self._spn_threads)
+        fl.addRow(_tr("Количество потоков:"), self._spn_threads)
         
         self._spn_executions = QSpinBox()
         self._spn_executions.setRange(-1, 999999)
-        self._spn_executions.setSpecialValueText("∞ Бесконечно")
+        self._spn_executions.setSpecialValueText(_tr("∞ Бесконечно"))
         self._spn_executions.setToolTip(
-            "Сколько раз выполнить проект.\n"
-            "-1 = бесконечно (до ручной остановки)."
+            _tr("Сколько раз выполнить проект.\n"
+            "-1 = бесконечно (до ручной остановки).")
         )
-        fl.addRow("Количество выполнений:", self._spn_executions)
+        fl.addRow(_tr("Количество выполнений:"), self._spn_executions)
         
         self._cmb_mode = QComboBox()
-        self._cmb_mode.addItem("Последовательно", ThreadMode.SEQUENTIAL.value)
-        self._cmb_mode.addItem("Параллельно", ThreadMode.PARALLEL.value)
-        self._cmb_mode.addItem("С семафором (bottleneck)", ThreadMode.SEMAPHORE_WAIT.value)
+        self._cmb_mode.addItem(_tr("Последовательно"), ThreadMode.SEQUENTIAL.value)
+        self._cmb_mode.addItem(_tr("Параллельно"), ThreadMode.PARALLEL.value)
+        self._cmb_mode.addItem(_tr("С семафором (bottleneck)"), ThreadMode.SEMAPHORE_WAIT.value)
         self._cmb_mode.setToolTip(
-            "Последовательно: потоки ждут друг друга.\n"
+            _tr("Последовательно: потоки ждут друг друга.\n"
             "Параллельно: все потоки работают одновременно.\n"
-            "С семафором: ресурсоёмкий сниппет ограничен лимитом."
+            "С семафором: ресурсоёмкий сниппет ограничен лимитом.")
         )
-        fl.addRow("Режим потоков:", self._cmb_mode)
+        fl.addRow(_tr("Режим потоков:"), self._cmb_mode)
         
         self._cmb_mode.currentIndexChanged.connect(self._on_mode_changed)
         
         # Bottleneck группа
-        self._grp_bottleneck = QGroupBox("⚠️ Узкое горлышко (Bottleneck)")
+        self._grp_bottleneck = QGroupBox(_tr("⚠️ Узкое горлышко (Bottleneck)"))
         bl = QFormLayout(self._grp_bottleneck)
         
         self._cmb_snippet = QComboBox()
-        self._cmb_snippet.addItem("(не выбран)", "")
+        self._cmb_snippet.addItem(_tr("(не выбран)"), "")
         for sid, sname in self._snippets:
             self._cmb_snippet.addItem(f"{sname} ({sid})", sid)
-        bl.addRow("Триггерный сниппет:", self._cmb_snippet)
+        bl.addRow(_tr("Триггерный сниппет:"), self._cmb_snippet)
         
         self._spn_bn_limit = QSpinBox()
         self._spn_bn_limit.setRange(1, 50)
         self._spn_bn_limit.setToolTip(
-            "Сколько потоков могут одновременно выполнять\n"
-            "этот ресурсоёмкий сниппет. Остальные ждут."
+            _tr("Сколько потоков могут одновременно выполнять\n"
+            "этот ресурсоёмкий сниппет. Остальные ждут.")
         )
-        bl.addRow("Макс. одновременно:", self._spn_bn_limit)
+        bl.addRow(_tr("Макс. одновременно:"), self._spn_bn_limit)
         
         self._grp_bottleneck.setVisible(False)
         fl.addRow(self._grp_bottleneck)
@@ -308,29 +320,29 @@ class ProjectLaunchDialog(QDialog):
         self._spn_priority = QSpinBox()
         self._spn_priority.setRange(1, 10)
         self._spn_priority.setValue(5)
-        self._spn_priority.setToolTip("1 = минимальный, 10 = максимальный приоритет")
-        fl.addRow("Приоритет:", self._spn_priority)
+        self._spn_priority.setToolTip(_tr("1 = минимальный, 10 = максимальный приоритет"))
+        fl.addRow(_tr("Приоритет:"), self._spn_priority)
 
-        self._chk_close_browser = QCheckBox("Закрывать браузер по завершении")
+        self._chk_close_browser = QCheckBox(_tr("Закрывать браузер по завершении"))
         self._chk_close_browser.setChecked(True)
         self._chk_close_browser.setToolTip(
-            "Если включено — все браузеры проекта будут закрыты\n"
+            _tr("Если включено — все браузеры проекта будут закрыты\n"
             "автоматически после завершения workflow.\n"
-            "Выключите, если нужно оставить браузер открытым."
+            "Выключите, если нужно оставить браузер открытым.")
         )
-        fl.addRow("🌐 Браузер:", self._chk_close_browser)
+        fl.addRow(_tr("🌐 Браузер:"), self._chk_close_browser)
 
-        tabs.addTab(w_threads, "🧵 Потоки")
+        tabs.addTab(w_threads, _tr("🧵 Потоки"))
         
         # ── Вкладка: Расписание ──────────────────────────────
         w_schedule = QWidget()
         sl = QFormLayout(w_schedule)
         sl.setSpacing(10)
         
-        self._chk_schedule = QCheckBox("Включить расписание")
+        self._chk_schedule = QCheckBox(_tr("Включить расписание"))
         sl.addRow(self._chk_schedule)
         
-        self._grp_schedule = QGroupBox("📅 Настройки расписания")
+        self._grp_schedule = QGroupBox(_tr("📅 Настройки расписания"))
         schl = QFormLayout(self._grp_schedule)
         
         self._dte_next_run = QDateTimeEdit()
@@ -338,21 +350,21 @@ class ProjectLaunchDialog(QDialog):
         self._dte_next_run.setDateTime(
             datetime.now().replace(second=0, microsecond=0) + timedelta(minutes=5)
         )
-        schl.addRow("Первый запуск:", self._dte_next_run)
+        schl.addRow(_tr("Первый запуск:"), self._dte_next_run)
         
         self._cmb_schedule_type = QComboBox()
-        self._cmb_schedule_type.addItem("Однократно", "once")
-        self._cmb_schedule_type.addItem("Каждые N минут", "interval")
-        self._cmb_schedule_type.addItem("Ежедневно в указанное время", "daily")
-        schl.addRow("Тип:", self._cmb_schedule_type)
+        self._cmb_schedule_type.addItem(_tr("Однократно"), "once")
+        self._cmb_schedule_type.addItem(_tr("Каждые N минут"), "interval")
+        self._cmb_schedule_type.addItem(_tr("Ежедневно в указанное время"), "daily")
+        schl.addRow(_tr("Тип:"), self._cmb_schedule_type)
         
         self._spn_interval = QSpinBox()
         self._spn_interval.setRange(1, 1440)
         self._spn_interval.setValue(30)
-        self._spn_interval.setSuffix(" мин")
-        schl.addRow("Интервал:", self._spn_interval)
+        self._spn_interval.setSuffix(_tr(" мин"))
+        schl.addRow(_tr("Интервал:"), self._spn_interval)
         
-        self._chk_repeat = QCheckBox("Повторять")
+        self._chk_repeat = QCheckBox(_tr("Повторять"))
         schl.addRow(self._chk_repeat)
         
         self._grp_schedule.setEnabled(False)
@@ -360,7 +372,7 @@ class ProjectLaunchDialog(QDialog):
         
         self._chk_schedule.toggled.connect(self._grp_schedule.setEnabled)
         
-        tabs.addTab(w_schedule, "📅 Расписание")
+        tabs.addTab(w_schedule, _tr("📅 Расписание"))
         
         # ── Вкладка: Остановка ───────────────────────────────
         w_stop = QWidget()
@@ -368,48 +380,48 @@ class ProjectLaunchDialog(QDialog):
         stl.setSpacing(10)
         
         self._cmb_stop = QComboBox()
-        self._cmb_stop.addItem("Нет условия", StopCondition.NONE.value)
-        self._cmb_stop.addItem("При первой ошибке", StopCondition.ON_FIRST_ERROR.value)
-        self._cmb_stop.addItem("После N ошибок подряд", StopCondition.ON_N_ERRORS.value)
-        self._cmb_stop.addItem("После N успехов", StopCondition.ON_SUCCESS_COUNT.value)
-        self._cmb_stop.addItem("По таймауту (секунды)", StopCondition.ON_TIME_LIMIT.value)
-        stl.addRow("Условие остановки:", self._cmb_stop)
+        self._cmb_stop.addItem(_tr("Нет условия"), StopCondition.NONE.value)
+        self._cmb_stop.addItem(_tr("При первой ошибке"), StopCondition.ON_FIRST_ERROR.value)
+        self._cmb_stop.addItem(_tr("После N ошибок подряд"), StopCondition.ON_N_ERRORS.value)
+        self._cmb_stop.addItem(_tr("После N успехов"), StopCondition.ON_SUCCESS_COUNT.value)
+        self._cmb_stop.addItem(_tr("По таймауту (секунды)"), StopCondition.ON_TIME_LIMIT.value)
+        stl.addRow(_tr("Условие остановки:"), self._cmb_stop)
         
         self._spn_stop_val = QSpinBox()
         self._spn_stop_val.setRange(1, 999999)
-        stl.addRow("Значение:", self._spn_stop_val)
+        stl.addRow(_tr("Значение:"), self._spn_stop_val)
         
-        tabs.addTab(w_stop, "🛑 Остановка")
+        tabs.addTab(w_stop, _tr("🛑 Остановка"))
         
         # ── Вкладка: Метки ───────────────────────────────────
         w_labels = QWidget()
         ll = QVBoxLayout(w_labels)
-        ll.addWidget(QLabel("Метки (через запятую):"))
+        ll.addWidget(QLabel(_tr("Метки (через запятую):")))
         self._edt_labels = QLineEdit()
         self._edt_labels.setPlaceholderText("бот, парсер, регистрация...")
         ll.addWidget(self._edt_labels)
         ll.addStretch()
         
-        tabs.addTab(w_labels, "🏷 Метки")
+        tabs.addTab(w_labels, _tr("🏷 Метки"))
         
         layout.addWidget(tabs)
         
         # ── Кнопки ───────────────────────────────────────────
         bb = QDialogButtonBox()
-        self._btn_start = QPushButton("▶️  Запустить")
+        self._btn_start = QPushButton(_tr("▶️  Запустить"))
         self._btn_start.setStyleSheet(
             "QPushButton { background-color: #3d5940; color: #9ece6a; font-weight: bold; }"
             "QPushButton:hover { background-color: #4d6950; }"
         )
         self._btn_start.clicked.connect(self.accept)
         
-        btn_cancel = QPushButton("Отмена")
+        btn_cancel = QPushButton(_tr("Отмена"))
         btn_cancel.clicked.connect(self.reject)
         
         bb.addButton(self._btn_start, QDialogButtonBox.ButtonRole.AcceptRole)
         bb.addButton(btn_cancel, QDialogButtonBox.ButtonRole.RejectRole)
         layout.addWidget(bb)
-    
+        
     def _on_mode_changed(self, idx):
         mode = self._cmb_mode.currentData()
         self._grp_bottleneck.setVisible(mode == ThreadMode.SEMAPHORE_WAIT.value)
@@ -513,11 +525,11 @@ class SideFilterPanel(QWidget):
         hl = QVBoxLayout(header)
         hl.setSpacing(4)
         
-        self._lbl_threads = QLabel("Потоки: 0")
+        self._lbl_threads = QLabel(_tr("Потоки") + ": 0")
         self._lbl_threads.setStyleSheet(f"color: {_gc('ok')}; font-weight: bold; font-size: 13px;")
         hl.addWidget(self._lbl_threads)
         
-        self._lbl_max = QLabel("Максимум: 10")
+        self._lbl_max = QLabel(_tr("Максимум") + ": 10")
         self._lbl_max.setStyleSheet(f"color: {_gc('tx2')}; font-size: 11px;")
         hl.addWidget(self._lbl_max)
         
@@ -532,7 +544,7 @@ class SideFilterPanel(QWidget):
         
         # ── Задания ──────────────────────────────
         layout.addWidget(QLabel(""))
-        self._lbl_tasks = QLabel("  📋 Задания")
+        self._lbl_tasks = QLabel(f"  📋 {_tr('Задания')}")
         self._lbl_tasks.setStyleSheet("color: #7aa2f7; font-weight: bold; font-size: 12px;")
         layout.addWidget(self._lbl_tasks)
         
@@ -542,7 +554,7 @@ class SideFilterPanel(QWidget):
         self._status_items: dict[str, QListWidgetItem] = {}
         
         # "Все"
-        item_all = QListWidgetItem("📋  Все (0)")
+        item_all = QListWidgetItem(f"📋  {_tr('Все')} (0)")
         item_all.setData(Qt.ItemDataRole.UserRole, ("all", "all"))
         self._list_statuses.addItem(item_all)
         self._status_items["all"] = item_all
@@ -551,7 +563,7 @@ class SideFilterPanel(QWidget):
                        ProjectStatus.STOPPED, ProjectStatus.SCHEDULED,
                        ProjectStatus.PAUSED, ProjectStatus.ERROR]:
             icon = _STATUS_ICONS.get(status, "")
-            label = _STATUS_LABELS.get(status, status.value)
+            label = _get_status_labels().get(status, status.value)
             item = QListWidgetItem(f"{icon}  {label} (0)")
             item.setData(Qt.ItemDataRole.UserRole, ("status", status.value))
             color = _STATUS_COLORS.get(status, "#c0caf5")
@@ -563,7 +575,7 @@ class SideFilterPanel(QWidget):
         layout.addWidget(self._list_statuses)
         
         # ── Метки ────────────────────────────────
-        self._lbl_labels = QLabel("  🏷 Метки")
+        self._lbl_labels = QLabel(f"  🏷 {_tr('Метки')}")
         self._lbl_labels.setStyleSheet("color: #7aa2f7; font-weight: bold; font-size: 12px;")
         layout.addWidget(self._lbl_labels)
         
@@ -637,12 +649,12 @@ class SideFilterPanel(QWidget):
             counts[p.status.value] = counts.get(p.status.value, 0) + 1
         
         total = len(projects)
-        self._status_items["all"].setText(f"📋  Все ({total})")
+        self._status_items["all"].setText(f"📋  {_dashboard_tr('Все')} ({total})")
         
         for status in ProjectStatus:
             if status.value in self._status_items:
                 icon = _STATUS_ICONS.get(status, "")
-                label = _STATUS_LABELS.get(status, status.value)
+                label = _get_status_labels().get(status, status.value)
                 cnt = counts.get(status.value, 0)
                 self._status_items[status.value].setText(f"{icon}  {label} ({cnt})")
         
@@ -660,8 +672,8 @@ class SideFilterPanel(QWidget):
     
     def update_thread_stats(self, active: int, maximum: int):
         """Обновить отображение потоков."""
-        self._lbl_threads.setText(f"Потоки: {active}")
-        self._lbl_max.setText(f"Максимум: {maximum}")
+        self._lbl_threads.setText(f"{_dashboard_tr('Потоки')}: {active}")
+        self._lbl_max.setText(f"{_dashboard_tr('Максимум')}: {maximum}")
         self._progress_threads.setMaximum(max(1, maximum))
         self._progress_threads.setValue(active)
         
@@ -696,11 +708,14 @@ COL_LABELS     = 9
 COL_NEXT_RUN   = 10
 COL_MODE       = 11
 
-_COLUMN_HEADERS = [
-    "Статус", "Имя", "Прогресс", "Успехи", "Неуспехи",
-    "Попытки", "Потоки", "Макс. потоков", "Приоритет",
-    "Метки", "Следующий запуск", "Режим"
-]
+def _get_column_headers():
+    return [
+        _tr("Статус"), _tr("Имя"), _tr("Прогресс"),
+        _tr("Успехи"), _tr("Неуспехи"), _tr("Попытки"),
+        _tr("Потоки"), _tr("Макс. потоков"), _tr("Приоритет"),
+        _tr("Метки"), _tr("Следующий запуск"), _tr("Режим"),
+    ]
+_COLUMN_HEADERS = _get_column_headers()
 
 
 class ProgressBarDelegate(QStyledItemDelegate):
@@ -762,7 +777,11 @@ class ProjectDashboard(QWidget):
                  constructor_window=None, parent=None):
         super().__init__(parent)
         self.setStyleSheet(_DASHBOARD_STYLE)
-        self.setWindowTitle("📊 Менеджер проектов — AI Code Sherlock")
+        try:
+            from ui.i18n import tr as _tr
+        except ImportError:
+            _tr = lambda s: s
+        self.setWindowTitle(_tr("📊 Менеджер проектов — AI Code Sherlock"))
         self.resize(1200, 700)
         
         self._manager = manager or ProjectExecutionManager.instance()
@@ -840,11 +859,11 @@ class ProjectDashboard(QWidget):
         self._toolbar = QToolBar()
         self._toolbar.setIconSize(QSize(16, 16))
         
-        self._btn_add = QPushButton("➕ Добавить")
+        self._btn_add = QPushButton("➕ " + _tr("Добавить"))
         self._btn_add.clicked.connect(self._show_add_menu)
         self._toolbar.addWidget(self._btn_add)
         
-        self._btn_remove = QPushButton("🗑 Удалить")
+        self._btn_remove = QPushButton("🗑 " + _tr("Удалить"))
         self._btn_remove.clicked.connect(self._remove_selected)
         self._toolbar.addWidget(self._btn_remove)
         
@@ -854,21 +873,21 @@ class ProjectDashboard(QWidget):
             from ui.theme_manager import get_color as _gc
         except ImportError:
             def _gc(k): return {"ok": "#9ece6a", "err": "#f7768e", "warn": "#e0af68", "ac": "#7aa2f7", "bg3": "#1A1D2E"}.get(k, "#c0caf5")
-        self._btn_start = QPushButton("▶️ Запустить")
+        self._btn_start = QPushButton("▶️ " + _tr("Запустить"))
         self._btn_start.setStyleSheet(
             f"QPushButton {{ color: {_gc('ok')}; }} QPushButton:hover {{ background: {_gc('bg3')}; }}"
         )
         self._btn_start.clicked.connect(self._start_selected)
         self._toolbar.addWidget(self._btn_start)
         
-        self._btn_stop = QPushButton("⏹ Остановить")
+        self._btn_stop = QPushButton("⏹ " + _tr("Остановить"))
         self._btn_stop.setStyleSheet(
             f"QPushButton {{ color: {_gc('err')}; }} QPushButton:hover {{ background: {_gc('bg3')}; }}"
         )
         self._btn_stop.clicked.connect(self._stop_selected)
         self._toolbar.addWidget(self._btn_stop)
         
-        self._btn_pause = QPushButton("⏸ Пауза")
+        self._btn_pause = QPushButton("⏸ " + _tr("Пауза"))
         self._btn_pause.clicked.connect(self._pause_selected)
         self._toolbar.addWidget(self._btn_pause)
         
@@ -878,20 +897,20 @@ class ProjectDashboard(QWidget):
         for n in [1, 5, 10, 50]:
             btn = QPushButton(f"+{n}")
             btn.setFixedWidth(36)
-            btn.setToolTip(f"Добавить {n} попыток")
+            btn.setToolTip(f"{_tr('Добавить попытки')}: {n}")
             btn.clicked.connect(lambda checked, count=n: self._add_executions(count))
             self._toolbar.addWidget(btn)
         
         self._btn_inf = QPushButton("∞")
         self._btn_inf.setFixedWidth(30)
-        self._btn_inf.setToolTip("Бесконечное выполнение")
+        self._btn_inf.setToolTip(_tr("Бесконечное выполнение"))
         self._btn_inf.setStyleSheet("QPushButton { font-size: 16px; color: #bb9af7; }")
         self._btn_inf.clicked.connect(lambda: self._add_executions(-1))
         self._toolbar.addWidget(self._btn_inf)
         
         self._toolbar.addSeparator()
         
-        self._btn_open = QPushButton("📂 Открыть в редакторе")
+        self._btn_open = QPushButton("📂 " + _tr("Открыть в редакторе"))
         self._btn_open.clicked.connect(self._open_in_editor)
         self._toolbar.addWidget(self._btn_open)
         
@@ -1053,9 +1072,9 @@ class ProjectDashboard(QWidget):
         
         # Режим
         mode_labels = {
-            ThreadMode.SEQUENTIAL: "Последоват.",
-            ThreadMode.PARALLEL: "Параллельно",
-            ThreadMode.SEMAPHORE_WAIT: "Семафор",
+            ThreadMode.SEQUENTIAL: _tr("Последоват."),
+            ThreadMode.PARALLEL: _tr("Параллельно"),
+            ThreadMode.SEMAPHORE_WAIT: _tr("Семафор"),
         }
         item = QTableWidgetItem(mode_labels.get(entry.thread_mode, entry.thread_mode.value))
         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1390,42 +1409,42 @@ class ProjectDashboard(QWidget):
             return
         
         if entry.status != ProjectStatus.RUNNING:
-            menu.addAction("▶️  Запустить", self._start_selected)
+            menu.addAction(f"▶️  {_tr('Запустить')}", self._start_selected)
         else:
-            menu.addAction("⏹  Остановить", self._stop_selected)
+            menu.addAction(f"⏹  {_tr('Остановить')}", self._stop_selected)
             if entry.status == ProjectStatus.RUNNING:
-                menu.addAction("⏸  Пауза", self._pause_selected)
+                menu.addAction(f"⏸  {_tr('Пауза')}", self._pause_selected)
             elif entry.status == ProjectStatus.PAUSED:
-                menu.addAction("▶️  Возобновить", self._pause_selected)
+                menu.addAction(f"▶️  {_tr('Возобновить')}", self._pause_selected)
         
         menu.addSeparator()
         
-        add_menu = menu.addMenu("➕ Добавить попытки")
+        add_menu = menu.addMenu(f"➕ {_tr('Добавить попытки')}")
         for n in [1, 5, 10, 50, 100]:
             add_menu.addAction(f"+{n}", lambda checked=False, c=n: self._add_executions(c))
-        add_menu.addAction("∞ Бесконечно", lambda: self._add_executions(-1))
+        add_menu.addAction(f"∞ {_tr('Бесконечно')}", lambda: self._add_executions(-1))
         
         menu.addSeparator()
         
         # Изменить потоки
-        thr_menu = menu.addMenu("🧵 Потоки")
+        thr_menu = menu.addMenu(f"🧵 {_tr('Потоки')}")
         for n in [1, 2, 3, 5, 10, 20]:
             thr_menu.addAction(
-                f"{n} потоков",
+                f"{n} {_tr('потоков')}",
                 lambda checked=False, c=n: self._set_threads(c)
             )
         
         menu.addSeparator()
         
-        menu.addAction("📂  Открыть в редакторе", self._open_in_editor)
-        menu.addAction("⚙️  Настройки...", lambda: self._on_double_click(
+        menu.addAction(f"📂  {_tr('Открыть в редакторе')}", self._open_in_editor)
+        menu.addAction(f"⚙️  {_tr('Настройки...')}", lambda: self._on_double_click(
             self._table.model().index(self._table.currentRow(), 0)
         ))
         
         menu.addSeparator()
         
-        menu.addAction("🔄  Сбросить статистику", self._reset_stats)
-        menu.addAction("🗑  Удалить", self._remove_selected)
+        menu.addAction(f"🔄  {_tr('Сбросить статистику')}", self._reset_stats)
+        menu.addAction(f"🗑  {_tr('Удалить')}", self._remove_selected)
         
         menu.exec(self._table.viewport().mapToGlobal(pos))
     

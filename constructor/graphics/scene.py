@@ -1162,15 +1162,31 @@ class WorkflowScene(QGraphicsScene):
         
         # ── Подменю браузер ──
         browser_menu = menu.addMenu(tr("🌐 Браузер"))
-        for at in [
-            AgentType.BROWSER_LAUNCH,
-            AgentType.BROWSER_ACTION,
-            AgentType.BROWSER_CLOSE,
-            AgentType.BROWSER_AGENT,
-        ]:
-            icon = _AGENT_ICONS.get(at, "🌐")
-            translated_name = tr(at.value.replace('_', ' ').title())
-            act = browser_menu.addAction(f"{icon} {translated_name}")
+        _browser_items = [
+            (AgentType.BROWSER_LAUNCH,      tr("🌐 Запустить браузер")),
+            (AgentType.BROWSER_ACTION,      tr("🖱 Действие браузера")),
+            (AgentType.BROWSER_CLICK_IMAGE, tr("🖼 Клик по картинке")),
+            (AgentType.BROWSER_SCREENSHOT,  tr("📸 Скриншот страницы")),
+            (AgentType.BROWSER_CLOSE,       tr("🔴 Закрыть браузер")),
+            (AgentType.BROWSER_AGENT,       tr("🌐🧠 Browser Agent (AI)")),
+            (AgentType.BROWSER_PROFILE_OP,  tr("🪪 Операции с профилем")),
+        ]
+        for at, label in _browser_items:
+            act = browser_menu.addAction(label)
+            act.triggered.connect(lambda checked, t=at, pos=event.scenePos():
+                self._create_node_and_connect_if_needed(t, pos))
+
+        # ── Подменю программы ──
+        program_menu = menu.addMenu(tr("🖥 Программы"))
+        _program_items = [
+            (AgentType.PROGRAM_OPEN,        tr("🖥 Открыть программу")),
+            (AgentType.PROGRAM_ACTION,      tr("🎯 Действие в программе")),
+            (AgentType.PROGRAM_CLICK_IMAGE, tr("🖼 Клик по картинке")),
+            (AgentType.PROGRAM_SCREENSHOT,  tr("📸 Скриншот программы")),
+            (AgentType.PROGRAM_AGENT,       tr("🖥🧠 Program Agent (AI)")),
+        ]
+        for at, label in _program_items:
+            act = program_menu.addAction(label)
             act.triggered.connect(lambda checked, t=at, pos=event.scenePos():
                 self._create_node_and_connect_if_needed(t, pos))
 

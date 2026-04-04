@@ -6177,6 +6177,38 @@ class ProgramTrayMiniature(QWidget):
         hwnd = self._get_hwnd()
         if hwnd:
             ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+        # Убираем из реестра и из трея немедленно
+        panel = getattr(self, '_panel_ref', None)
+        if panel:
+            panel._remove_program(self.pid)
+        # Удаляем из реестра открытых программ
+        try:
+            panel = self.parent().parent()  # ProgramInstancePanel
+            mw = panel._main_window
+            for attr in ('_runtime_thread', '_runtime'):
+                rt = getattr(mw, attr, None)
+                if rt and hasattr(rt, '_context'):
+                    rt._context.get('_open_programs', {}).pop(str(self.pid), None)
+            tab = mw._current_project_tab() if hasattr(mw, '_current_project_tab') else None
+            if tab:
+                for a in ('_last_runtime', '_runtime', '_runtime_thread'):
+                    rt3 = getattr(tab, a, None)
+                    if rt3 and hasattr(rt3, '_context'):
+                        rt3._context.get('_open_programs', {}).pop(str(self.pid), None)
+                saved = getattr(tab, '_last_open_programs', {})
+                saved.pop(str(self.pid), None)
+            getattr(mw, '_last_open_programs', {}).pop(str(self.pid), None)
+        except Exception:
+            pass
+        # Немедленно убираем миниатюру из UI
+        try:
+            panel = self.parent().parent()
+            if hasattr(panel, '_miniatures') and self.pid in panel._miniatures:
+                panel._miniatures.pop(self.pid)
+                panel._flow.removeWidget(self)
+                self.deleteLater()
+        except Exception:
+            pass
 
 
 class ProgramInstancePanel(QWidget):
@@ -6293,6 +6325,34 @@ class ProgramInstancePanel(QWidget):
             pass
         return {}
 
+    def _remove_program(self, pid: int):
+        """Удалить программу из реестра и убрать миниатюру из трея."""
+        pid_str = str(pid)
+        try:
+            mw = self._main_window
+            for attr in ('_runtime_thread', '_runtime'):
+                rt = getattr(mw, attr, None)
+                if rt and hasattr(rt, '_context'):
+                    rt._context.get('_open_programs', {}).pop(pid_str, None)
+            tab = mw._current_project_tab() if hasattr(mw, '_current_project_tab') else None
+            if tab:
+                for a in ('_last_runtime', '_runtime', '_runtime_thread'):
+                    rt3 = getattr(tab, a, None)
+                    if rt3 and hasattr(rt3, '_context'):
+                        rt3._context.get('_open_programs', {}).pop(pid_str, None)
+                getattr(tab, '_last_open_programs', {}).pop(pid_str, None)
+            getattr(mw, '_last_open_programs', {}).pop(pid_str, None)
+        except Exception:
+            pass
+        # Убираем виджет из UI
+        if pid in self._miniatures:
+            w = self._miniatures.pop(pid)
+            self._flow.removeWidget(w)
+            w.deleteLater()
+        has_programs = len(self._miniatures) > 0
+        self._lbl_empty.setVisible(not has_programs)
+        self._container.setVisible(has_programs)
+
     def _refresh(self):
         programs = self._get_open_programs()
         current_pids = set(int(k) for k in programs.keys())
@@ -6309,6 +6369,7 @@ class ProgramInstancePanel(QWidget):
             pid = int(pid_str)
             if pid not in self._miniatures:
                 mini = ProgramTrayMiniature(pid, entry, None, self._container)
+                mini._panel_ref = self  # для удаления из трея по кнопке Close
                 self._miniatures[pid] = mini
                 self._flow.addWidget(mini)
             else:

@@ -1033,7 +1033,7 @@ class AgentConstructorWindow(QMainWindow):
             self._browser_profiles.set_root(self._project_root)
             self._log_msg(f"🌐 Browser profiles root: {self._project_root}")
         
-        self._log_msg(f"🌐 Browser module ready: manager={getattr(self, '_browser_module_ready_flag', False)}")
+        self._log_msg(f"🌐 Браузер-модуль готов: manager={getattr(self, '_browser_module_ready_flag', False)}")
         
         # Глобальный перехватчик исключений для отладки крашей
         import sys
@@ -1174,7 +1174,7 @@ class AgentConstructorWindow(QMainWindow):
         btn_new_tab = QPushButton("＋")
         btn_new_tab.setFixedWidth(28)
         btn_new_tab.setToolTip(tr("Новый проект"))
-        btn_new_tab.clicked.connect(lambda: self._add_project_tab())
+        btn_new_tab.clicked.connect(lambda: self._add_project_tab(tr("Новый проект")))
         self._project_tabs.setCornerWidget(btn_new_tab)
 
         canvas_container = QWidget()
@@ -1371,6 +1371,40 @@ class AgentConstructorWindow(QMainWindow):
         tab = self._current_project_tab()
         if tab:
             tab._project_root = value
+    
+    def _refresh_snippet_palette_labels(self):
+        """Обновить тексты в левой панели сниппетов при смене языка."""
+        if not hasattr(self, '_snippet_list'):
+            return
+        label_map = {
+            AgentType.CODE_SNIPPET:    tr("📜 Код (сниппет)"),
+            AgentType.IF_CONDITION:    tr("❓ Условие (If)"),
+            AgentType.SWITCH:          tr("🔀 Выбор (Switch)"),
+            AgentType.LOOP:            tr("🔁 Цикл (Loop)"),
+            AgentType.VARIABLE_SET:    tr("📝 Установить переменную"),
+            AgentType.HTTP_REQUEST:    tr("🌐 HTTP-запрос"),
+            AgentType.DELAY:           tr("⏳ Задержка"),
+            AgentType.LOG_MESSAGE:     tr("📋 Запись в лог"),
+            AgentType.NOTIFICATION:    tr("🔔 Уведомление"),
+            AgentType.GOOD_END:        tr("✅ Успешный конец"),
+            AgentType.BAD_END:         tr("🛑 Плохой конец"),
+            AgentType.JS_SNIPPET:      tr("🟨 JavaScript"),
+            AgentType.PROGRAM_LAUNCH:  tr("⚙️ Запуск программы"),
+            AgentType.LIST_OPERATION:  tr("📃 Операции со списком"),
+            AgentType.TABLE_OPERATION: tr("📊 Операции с таблицей"),
+            AgentType.FILE_OPERATION:  tr("📄 Файлы"),
+            AgentType.DIR_OPERATION:   tr("📁 Директории"),
+            AgentType.TEXT_PROCESSING: tr("✂️ Обработка текста"),
+            AgentType.JSON_XML:        tr("🔣 JSON / XML"),
+            AgentType.VARIABLE_PROC:   tr("🔧 Обработка переменных"),
+            AgentType.RANDOM_GEN:      tr("🎲 Генерация случайных данных"),
+            AgentType.PROJECT_INFO:    tr("🔎 Инфо о проекте"),
+        }
+        for i in range(self._snippet_list.count()):
+            item = self._snippet_list.item(i)
+            at = item.data(Qt.ItemDataRole.UserRole)
+            if at in label_map:
+                item.setText(label_map[at])
     
     def _build_tower_from_selection(self):
         """Выстроить выбранные сниппеты в вертикальную башню и соединить стрелками."""
@@ -6621,13 +6655,15 @@ Output as structured JSON with workflow definition.""",
 
         # Формируем список несохранённых проектов
         names_list = "\n".join(
-            f"  • {name}" + (f"  ({_os.path.basename(path)})" if path else "  (новый)")
+            f"  • {name}" + (f"  ({_os.path.basename(path)})" if path else f"  ({tr('новый')})")
             for _, _, name, path in unsaved
         )
 
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle(tr("Несохранённые изменения"))
-        msg_box.setText(tr(f"Следующие проекты содержат несохранённые изменения:\n\n{names_list}"))
+        msg_box.setText(
+            tr("Следующие проекты содержат несохранённые изменения:") + f"\n\n{names_list}"
+        )
         msg_box.setInformativeText(tr("Сохранить все перед закрытием?"))
         msg_box.setStandardButtons(
             QMessageBox.StandardButton.SaveAll |
@@ -6853,9 +6889,9 @@ Output as structured JSON with workflow definition.""",
             if _tab is not None:
                 _tab._project_root = saved_root
             if os.path.exists(saved_root):
-                self._log_msg(f"📂 Рабочая папка: {saved_root}")
+                self._log_msg(f"{tr('📂 Рабочая папка:')} {saved_root}")
             else:
-                self._log_msg(f"📂 Рабочая папка (⚠ не существует): {saved_root}")
+                self._log_msg(f"{tr('📂 Рабочая папка (⚠ не существует):')} {saved_root}")
         
         models_data = meta.get('global_models')
 
@@ -7232,7 +7268,8 @@ Output as structured JSON with workflow definition.""",
         h_lay.setContentsMargins(6, 0, 6, 0)
         h_lay.setSpacing(6)
 
-        self._btn_lt_toggle = QPushButton("📋 Списки / Таблицы  ▼")
+        self._btn_lt_toggle = QPushButton(self._get_lt_panel_label() + "  ▼")
+        self._btn_lt_toggle.setProperty("_i18n_collapsed", True)
         self._btn_lt_toggle.setFlat(True)
         self._btn_lt_toggle.setStyleSheet(f"""
             QPushButton {{ color: {get_color('tx1')}; font-size: 11px;
@@ -7386,12 +7423,20 @@ Output as structured JSON with workflow definition.""",
     def _toggle_lt_inline_panel(self):
         self._lt_inline_expanded = not self._lt_inline_expanded
         self._lt_content_widget.setVisible(self._lt_inline_expanded)
+        _lt_label = self._get_lt_panel_label()
         self._btn_lt_toggle.setText(
-            "📋 Списки / Таблицы  ▲" if self._lt_inline_expanded
-            else "📋 Списки / Таблицы  ▼"
+            _lt_label + "  ▲" if self._lt_inline_expanded
+            else _lt_label + "  ▼"
         )
         if self._lt_inline_expanded:
             self._refresh_lt_inline_chips()
+    
+    def _get_lt_panel_label(self) -> str:
+        """Переведённый заголовок панели Списки/Таблицы — работает в любом состоянии."""
+        label = tr("📋 Списки / Таблицы")
+        if label == "📋 Списки / Таблицы" and tr("Статус") != "Статус":
+            label = "📋 Lists / Tables"
+        return label
     
     def _show_lt_header_context_menu(self, pos):
         """Контекстное меню при ПКМ по заголовку панели списков/таблиц."""
@@ -7605,10 +7650,10 @@ Output as structured JSON with workflow definition.""",
             chip = QPushButton(f"{icon} {lst['name']}  [{cnt}]")
             chip.setFixedHeight(30)
             chip.setToolTip(
-                f"Список: {lst['name']}\n"
-                f"Строк: {cnt} | Режим: {lst.get('load_mode','static')}\n"
-                f"Файл: {lst.get('file_path','—') or '—'}\n\n"
-                "Клик — открыть редактор"
+                f"{tr('Список')}: {lst['name']}\n"
+                f"{tr('Строк')}: {cnt} | {tr('Режим')}: {lst.get('load_mode','static')}\n"
+                f"{tr('Файл')}: {lst.get('file_path','—') or '—'}\n\n"
+                f"{tr('Клик — открыть редактор')}"
             )
             chip.setStyleSheet(f"""
                 QPushButton {{ background: transparent; color: #9ECE6A; border: 1px solid #9ECE6A;
@@ -7636,10 +7681,10 @@ Output as structured JSON with workflow definition.""",
             chip = QPushButton(f"{icon} {tbl['name']}  [{rows}×{cols}]")
             chip.setFixedHeight(30)
             chip.setToolTip(
-                f"Таблица: {tbl['name']}\n"
-                f"Строк: {rows} | Колонок: {cols} | Режим: {tbl.get('load_mode','static')}\n"
-                f"Файл: {tbl.get('file_path','—') or '—'}\n\n"
-                "Клик — открыть редактор"
+                f"{tr('Таблица')}: {tbl['name']}\n"
+                f"{tr('Строк')}: {rows} | {tr('Колонок')}: {cols} | {tr('Режим')}: {tbl.get('load_mode','static')}\n"
+                f"{tr('Файл')}: {tbl.get('file_path','—') or '—'}\n\n"
+                f"{tr('Клик — открыть редактор')}"
             )
             chip.setStyleSheet(f"""
                 QPushButton {{ background: transparent; color: #7AA2F7; border: 1px solid #7AA2F7;
@@ -8598,27 +8643,27 @@ Output as structured JSON with workflow definition.""",
                     AgentType.PROJECT_INFO]:
             icon = _SNIPPET_ICONS.get(at, "📜")
             label = {
-                AgentType.CODE_SNIPPET: tr("Code Snippet"),
-                AgentType.IF_CONDITION: tr("If Condition"),
-                AgentType.SWITCH: tr("Switch"),
-                AgentType.LOOP: tr("Loop"),
-                AgentType.VARIABLE_SET: tr("Variable Set"),
-                AgentType.HTTP_REQUEST: tr("Http Request"),
-                AgentType.DELAY: tr("Delay"),
-                AgentType.LOG_MESSAGE: tr("Log Message"),
-                AgentType.NOTIFICATION: tr("Notification"),
-                AgentType.GOOD_END: tr("Good End"),
-                AgentType.BAD_END: tr("Bad End"),
-                AgentType.JS_SNIPPET: tr("JavaScript"),
-                AgentType.PROGRAM_LAUNCH: tr("Запуск программы"),
-                AgentType.LIST_OPERATION: tr("Операции со списком"),
-                AgentType.TABLE_OPERATION: tr("Операции с таблицей"),
-                AgentType.FILE_OPERATION: tr("Файлы"),
-                AgentType.DIR_OPERATION: tr("Директории"),
-                AgentType.TEXT_PROCESSING: tr("Обработка текста"),
-                AgentType.JSON_XML: tr("JSON / XML"),
-                AgentType.VARIABLE_PROC: tr("Обработка переменных"),
-                AgentType.RANDOM_GEN:  tr("Random (генерация)"),
+                AgentType.CODE_SNIPPET: tr("📜 Код (сниппет)"),
+                AgentType.IF_CONDITION: tr("❓ Условие (If)"),
+                AgentType.SWITCH: tr("🔀 Выбор (Switch)"),
+                AgentType.LOOP: tr("🔁 Цикл (Loop)"),
+                AgentType.VARIABLE_SET: tr("📝 Установить переменную"),
+                AgentType.HTTP_REQUEST: tr("🌐 HTTP-запрос"),
+                AgentType.DELAY: tr("⏳ Задержка"),
+                AgentType.LOG_MESSAGE: tr("📋 Запись в лог"),
+                AgentType.NOTIFICATION: tr("🔔 Уведомление"),
+                AgentType.GOOD_END: tr("✅ Успешный конец"),
+                AgentType.BAD_END: tr("🛑 Плохой конец"),
+                AgentType.JS_SNIPPET: tr("🟨 JavaScript"),
+                AgentType.PROGRAM_LAUNCH: tr("⚙️ Запуск программы"),
+                AgentType.LIST_OPERATION: tr("📃 Операции со списком"),
+                AgentType.TABLE_OPERATION: tr("📊 Операции с таблицей"),
+                AgentType.FILE_OPERATION: tr("📄 Файлы"),
+                AgentType.DIR_OPERATION: tr("📁 Директории"),
+                AgentType.TEXT_PROCESSING: tr("✂️ Обработка текста"),
+                AgentType.JSON_XML: tr("🔣 JSON / XML"),
+                AgentType.VARIABLE_PROC: tr("🔧 Обработка переменных"),
+                AgentType.RANDOM_GEN:  tr("🎲 Генерация случайных данных"),
                 AgentType.PROJECT_INFO: tr("🔎 Инфо о проекте"),
             }.get(at, tr(at.value.replace('_', ' ').title()))
             item = QListWidgetItem(f"{icon}  {label}")
@@ -9678,9 +9723,9 @@ Output as structured JSON with workflow definition.""",
                 self._fld_working_dir.setText(saved_root)
                 self._fld_working_dir.blockSignals(False)
                 if os.path.exists(saved_root):
-                    self._log_msg(f"📂 Восстановлена рабочая папка: {saved_root}")
+                    self._log_msg(f"{tr('📂 Восстановлена рабочая папка:')} {saved_root}")
                 else:
-                    self._log_msg(f"📂 Рабочая папка (⚠ не существует): {saved_root}")
+                    self._log_msg(f"{tr('📂 Рабочая папка (⚠ не существует):')} {saved_root}")
             
             if hasattr(self, '_vars_panel'):
                 self._vars_panel._workflow = self._workflow
@@ -9843,6 +9888,9 @@ Output as structured JSON with workflow definition.""",
                 if not hasattr(node, 'snippet_config'):
                     node.snippet_config = {}
             self._sync_globals_to_workflow()
+            # Принудительно синхронизируем списки/таблицы перед сохранением
+            if hasattr(self, '_vars_panel') and self._vars_panel:
+                self._vars_panel._save_lists_tables_to_workflow()
             for node in self._workflow.nodes:
                 _init_extended_attrs(node)
             self._workflow.save(self._file_path)
@@ -10544,7 +10592,7 @@ Output as structured JSON with workflow definition.""",
         e = len(self._workflow.edges)
         name = self._workflow.name
         self._statusbar.showMessage(
-            f"{name} — {n} агентов, {e} связей" +
+            f"{tr(name)} — {n} {tr('агентов')}, {e} {tr('связей')}" +
             (f" — {Path(self._file_path).name}" if self._file_path else ""))
 
     def _vline(self) -> QFrame:
@@ -10738,12 +10786,24 @@ Output as structured JSON with workflow definition.""",
                 self._bottom_tabs.setTabText(0, tr("📋 Системный лог"))
                 self._bottom_tabs.setTabText(1, tr("💬 Диалог агентов"))
                 self._bottom_tabs.setTabText(2, tr("🌐 Браузеры"))
+                self._bottom_tabs.setTabText(3, tr("🖥 Программы"))
                 
             if hasattr(self, '_props'):
                 _retranslate_widget(self._props)
                 
             if hasattr(self, '_vars_panel'):
                 _retranslate_widget(self._vars_panel)
+                # Явно переустанавливаем тексты вкладок vars_panel
+                vp = self._vars_panel
+                if hasattr(vp, '_tabs'):
+                    vp._tabs.setTabText(0, tr("📋 Переменные"))
+                    vp._tabs.setTabText(1, tr("🔍 Regex Тестер"))
+                    vp._tabs.setTabText(2, tr("📋 Списки / Таблицы"))
+                    vp._tabs.setTabText(3, tr("🌍 Глобальные"))
+                    vp._tabs.setTabText(4, tr("📌 Заметки"))
+                if hasattr(vp, '_lists_tables_sub_tabs'):
+                    vp._lists_tables_sub_tabs.setTabText(0, tr("📃 Списки"))
+                    vp._lists_tables_sub_tabs.setTabText(1, tr("📊 Таблицы"))
                 
             if hasattr(self, '_project_tabs'):
                 _retranslate_widget(self._project_tabs)
@@ -10763,6 +10823,10 @@ Output as structured JSON with workflow definition.""",
             # Перестраиваем snippet панель
             if hasattr(self, '_rebuild_snippet_panel'):
                 self._rebuild_snippet_panel()
+            
+            # Обновляем тексты в левой палитре сниппетов
+            if hasattr(self, '_refresh_snippet_palette_labels'):
+                self._refresh_snippet_palette_labels()
                 
             # Обновляем палитру
             if hasattr(self, '_apply_palette_styles'):
@@ -10808,6 +10872,42 @@ Output as structured JSON with workflow definition.""",
                             lbl.setText(tr(label_key))
                             break
             
+            if hasattr(self, '_btn_lt_toggle'):
+                arrow = "▲" if getattr(self, '_lt_inline_expanded', False) else "▼"
+                self._btn_lt_toggle.setText(self._get_lt_panel_label() + f"  {arrow}")
+
+            if hasattr(self, '_snippet_list'):
+                label_map = {
+                    AgentType.CODE_SNIPPET:    tr("Code Snippet"),
+                    AgentType.IF_CONDITION:    tr("If Condition"),
+                    AgentType.SWITCH:          tr("Switch"),
+                    AgentType.LOOP:            tr("Loop"),
+                    AgentType.VARIABLE_SET:    tr("Variable Set"),
+                    AgentType.HTTP_REQUEST:    tr("Http Request"),
+                    AgentType.DELAY:           tr("Delay"),
+                    AgentType.LOG_MESSAGE:     tr("Log Message"),
+                    AgentType.NOTIFICATION:    tr("Notification"),
+                    AgentType.GOOD_END:        tr("Good End"),
+                    AgentType.BAD_END:         tr("Bad End"),
+                    AgentType.JS_SNIPPET:      tr("JavaScript"),
+                    AgentType.PROGRAM_LAUNCH:  tr("Запуск программы"),
+                    AgentType.LIST_OPERATION:  tr("Операции со списком"),
+                    AgentType.TABLE_OPERATION: tr("Операции с таблицей"),
+                    AgentType.FILE_OPERATION:  tr("Файлы"),
+                    AgentType.DIR_OPERATION:   tr("Директории"),
+                    AgentType.TEXT_PROCESSING: tr("Обработка текста"),
+                    AgentType.JSON_XML:        tr("JSON / XML"),
+                    AgentType.VARIABLE_PROC:   tr("Обработка переменных"),
+                    AgentType.RANDOM_GEN:      tr("Random (генерация)"),
+                    AgentType.PROJECT_INFO:    tr("🔎 Инфо о проекте"),
+                }
+                for i in range(self._snippet_list.count()):
+                    item = self._snippet_list.item(i)
+                    at = item.data(Qt.ItemDataRole.UserRole)
+                    if at in label_map:
+                        icon = _SNIPPET_ICONS.get(at, "📜")
+                        item.setText(f"{icon}  {label_map[at]}")
+
             self._log_msg(tr("🌍 Язык обновлён"))
         except Exception as e:
             print(f"[i18n] retranslate error: {e}")
@@ -11137,9 +11237,9 @@ Output as structured JSON with workflow definition.""",
         # Если workflow уже сохранен - обновляем файл
         if self._file_path:
             self._save_workflow()
-            self._log_msg(f"💾 Рабочая папка сохранена в проект: {self._project_root}")
+            self._log_msg(f"{tr('💾 Рабочая папка сохранена в проект:')} {self._project_root}")
         else:
-            self._log_msg(f"💾 Рабочая папка запомнена: {self._project_root} (сохраните workflow для записи на диск)")
+            self._log_msg(f"{tr('💾 Рабочая папка запомнена:')} {self._project_root} ({tr('сохраните workflow для записи на диск')})")
     
     def _on_working_dir_changed(self, text: str):
         """Обработчик изменения рабочей папки в поле ввода."""
@@ -11320,14 +11420,16 @@ Output as structured JSON with workflow definition.""",
                     self._project_tabs.setCurrentIndex(i)
                     break
     
-    def _add_project_tab(self, name: str = "Проект") -> "ProjectTab":
+    def _add_project_tab(self, name: str = "") -> "ProjectTab":
         tab = ProjectTab(parent=self)
-        # Прокидываем ссылку на главное окно в сцену
         tab.scene._main_window = self
-        # Гарантируем что workflow создан
+        if not name:
+            name = tr("Новый проект")
         if tab.workflow is None:
             tab.workflow = AgentWorkflow()
             tab.scene.set_workflow(tab.workflow)
+        # Добавляем START только если workflow пустой (новый проект)
+        if not tab.workflow.nodes:
             _start = AgentNode(
                 name=tr("СТАРТ"),
                 agent_type=AgentType.PROJECT_START,

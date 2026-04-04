@@ -4413,6 +4413,26 @@ _RU_TO_EN: dict[str, str] = {
     "  - Кнопки управления (Старт/Стоп/Пауза/+N/∞)":
             "  - Control buttons (Start/Stop/Pause/+N/∞)",
     "  - Глобальную статистику потоков":    "  - Global flow statistics",
+    # ── Project Dashboard UI strings ──────────────────────────
+    "Добавить":                             "Add",
+    "Запустить":                            "Run",
+    "Остановить":                           "Stop",
+    "Пауза":                                "Pause",
+    "Возобновить":                          "Resume",
+    "Открыть в редакторе":                  "Open in editor",
+    "Потоки":                               "Threads",
+    "Приоритет":                            "Priority",
+    "Задания":                              "Tasks",
+    "Максимум":                             "Maximum",
+    "Выполняется":                          "Running",
+    "Выполнен":                             "Completed",
+    "Остановлен":                           "Stopped",
+    "Сбросить статистику":                  "Reset stats",
+    "Настройки...":                         "Settings...",
+    "Добавить попытки":                     "Add attempts",
+    "Бесконечно":                           "Infinite",
+    "потоков":                              "threads",
+    "Инфо":                                 "Info",
     "Project Execution Manager — многопоточное управление проектами в стиле ZennoPoster.":
             "Project Execution Manager — multi-threaded project management in style ZennoPoster.",
     "Архитектура:":                         "Architecture:",
@@ -4588,7 +4608,7 @@ _RU_TO_EN: dict[str, str] = {
             "Quickly rename a list through a dialog.",
     "Быстрое переименование таблицы через диалог.":
             "Quickly rename a table via dialog.",
-    "В очереди":                            "In line",
+    "В очереди":                            "Queued",
     "В папке не найдено файлов *.workflow.json":
             "No files found in folder *.workflow.json",
     "В переменную (base64)":                "To a variable (base64)",
@@ -5338,7 +5358,7 @@ _RU_TO_EN: dict[str, str] = {
     "Последний патч привёл к":              "The latest patch led to",
     "Последний:":                           "Last:",
     "Последнюю строку":                     "Last line",
-    "Последоват.":                          "Followed.",
+    "Последоват.":                          "Sequential",
     "Последовательно: потоки ждут друг друга.":
             "Consistently: streams are waiting for each other.",
     "Параллельно: все потоки работают одновременно.":

@@ -593,10 +593,11 @@ class ProjectVariablesPanel(QWidget):
     
     def _on_main_tab_changed(self, index: int):
         """Вызывается при переключении основных вкладок панели переменных."""
-        tab_text = self._tabs.tabText(index)
-        if 'Списки' in tab_text or 'Таблицы' in tab_text:
+        # Используем индекс, а не текст — текст меняется при смене языка
+        # 0: Переменные, 1: Regex, 2: Списки/Таблицы, 3: Глобальные, 4: Заметки
+        if index == 2:
             self._load_lists_tables_from_workflow()
-        if 'Глобальные' in tab_text or 'Global' in tab_text:
+        elif index == 3:
             self._load_global_vars_from_workflow()
 
     def _sync_variable_to_ui(self, name: str, value: str):
@@ -1077,7 +1078,7 @@ class ProjectVariablesPanel(QWidget):
             fp = lst.get('file_path', '')
             file_hint = f"  📄 {fp[:30]}" if fp else ""
             self._lists_widget.addItem(
-                f"{icon}  {lst['name']}  [{count} строк]{file_hint}"
+                f"{icon}  {lst['name']}  [{count} {tr('строк')}]{file_hint}"
             )
 
     def _on_list_selected(self, row: int):
@@ -1098,7 +1099,7 @@ class ProjectVariablesPanel(QWidget):
                 pass
         preview = '\n'.join(items[:20])
         if len(items) > 20:
-            preview += f"\n... (+{len(items)-20} строк)"
+            preview += f"\n... (+{len(items)-20} {tr('строк')})"
         self._list_preview.setPlainText(preview)
 
     # ─── Операции с таблицами ─────────────────────────────────
@@ -1157,7 +1158,7 @@ class ProjectVariablesPanel(QWidget):
             fp = tbl.get('file_path', '')
             file_hint = f"  📄 {fp[:25]}" if fp else ""
             self._tables_widget.addItem(
-                f"{icon}  {tbl['name']}  [{rows}р × {cols}к]{file_hint}"
+                f"{icon}  {tbl['name']}  [{rows}{tr('р')} × {cols}{tr('к')}]{file_hint}"
             )
 
     def _on_table_selected(self, row: int):
@@ -1544,7 +1545,7 @@ class ProjectListEditDialog(QDialog):
         super().__init__(parent)
         import copy
         self._data = copy.deepcopy(lst)
-        self.setWindowTitle(f"📃 Список: {lst.get('name', '')}")
+        self.setWindowTitle(f"{tr('📃 Список')}: {lst.get('name', '')}")
         self.resize(600, 550)
         self._build_ui()
         self._load_data()
@@ -1555,68 +1556,68 @@ class ProjectListEditDialog(QDialog):
 
         # Имя
         row = QHBoxLayout()
-        row.addWidget(QLabel("Имя:"))
+        row.addWidget(QLabel(tr("Имя:")))
         self._name = QLineEdit()
         row.addWidget(self._name)
         lay.addLayout(row)
 
         # Файл
-        grp_file = QGroupBox("Источник файла (необязательно)")
+        grp_file = QGroupBox(tr("Источник файла (необязательно)"))
         gl = QFormLayout(grp_file)
 
         fp_row = QHBoxLayout()
         self._file_path = QLineEdit()
-        self._file_path.setPlaceholderText("Путь к файлу (поддерживает {переменные})")
+        self._file_path.setPlaceholderText(tr("Путь к файлу (поддерживает {переменные})"))
         btn_browse = QPushButton("📂")
         btn_browse.setFixedWidth(30)
         btn_browse.clicked.connect(self._browse_file)
         fp_row.addWidget(self._file_path)
         fp_row.addWidget(btn_browse)
-        gl.addRow("Путь к файлу:", fp_row)
+        gl.addRow(tr("Путь к файлу:"), fp_row)
 
         self._load_mode = QComboBox()
-        self._load_mode.addItem("📝 Статически (только ручной ввод)", "static")
-        self._load_mode.addItem("🔄 Загрузить из файла при старте проекта", "on_start")
-        self._load_mode.addItem("♻️ Всегда читать из файла при обращении", "always")
-        gl.addRow("Режим загрузки:", self._load_mode)
+        self._load_mode.addItem(tr("📝 Статически (только ручной ввод)"), "static")
+        self._load_mode.addItem(tr("🔄 Загрузить из файла при старте проекта"), "on_start")
+        self._load_mode.addItem(tr("♻️ Всегда читать из файла при обращении"), "always")
+        gl.addRow(tr("Режим загрузки:"), self._load_mode)
 
         self._encoding = QComboBox()
         self._encoding.addItems(["utf-8", "utf-8-sig", "cp1251", "latin-1"])
-        gl.addRow("Кодировка:", self._encoding)
+        gl.addRow(tr("Кодировка:"), self._encoding)
 
-        btn_load_now = QPushButton("📥 Загрузить из файла сейчас")
+        btn_load_now = QPushButton(tr("📥 Загрузить из файла сейчас"))
         btn_load_now.clicked.connect(self._load_from_file_now)
         gl.addRow(btn_load_now)
 
-        self._chk_save_contents = QCheckBox("💾 Сохранять содержимое в файле проекта")
-        self._chk_save_contents.setToolTip(
+        self._chk_save_contents = QCheckBox(tr("💾 Сохранять содержимое в файле проекта"))
+        self._chk_save_contents.setToolTip(tr(
             "Если ВЫКЛЮЧЕНО — содержимое НЕ будет храниться в .workflow.json\n"
             "и будет загружаться из файла при каждом открытии проекта.\n"
             "Рекомендуется выключить для больших списков (тысячи строк)."
-        )
+        ))
         gl.addRow(self._chk_save_contents)
 
         lay.addWidget(grp_file)
 
         # Редактор строк
-        grp_items = QGroupBox("Строки списка (каждая строка — отдельный элемент)")
+        grp_items = QGroupBox(tr("Строки списка (каждая строка — отдельный элемент)"))
         gl2 = QVBoxLayout(grp_items)
 
         toolbar = QHBoxLayout()
         btn_add_line = QPushButton("➕")
         btn_add_line.setFixedWidth(28)
-        btn_add_line.setToolTip("Добавить пустую строку")
+        btn_add_line.setToolTip(tr("Добавить пустую строку"))
         btn_add_line.clicked.connect(self._add_empty_line)
         btn_del_line = QPushButton("🗑")
         btn_del_line.setFixedWidth(28)
-        btn_del_line.setToolTip("Удалить выбранную строку")
+        btn_del_line.setToolTip(tr("Удалить выбранную строку"))
         btn_del_line.clicked.connect(self._del_line)
         btn_sort = QPushButton("↕ Сорт.")
         btn_sort.setFixedWidth(50)
         btn_sort.clicked.connect(self._sort_lines)
         btn_dedup = QPushButton("🔁 Дубли")
         btn_dedup.setFixedWidth(55)
-        btn_dedup.setToolTip("Удалить дублирующиеся строки")
+        btn_dedup.setToolTip(tr("Удалить дублирующиеся строки"))
         btn_dedup.clicked.connect(self._remove_duplicates)
         lbl_count = QLabel()
         self._lbl_count = lbl_count
@@ -1630,9 +1631,9 @@ class ProjectListEditDialog(QDialog):
         gl2.addLayout(toolbar)
 
         self._editor = QPlainTextEdit()
-        self._editor.setPlaceholderText(
+        self._editor.setPlaceholderText(tr(
             "Введите строки — каждая строка будет отдельным элементом списка"
-        )
+        ))
         self._editor.setStyleSheet(
             f"QPlainTextEdit {{ background: {get_color('bg0')}; color: #9ECE6A; "
             f"font-family: Consolas, monospace; font-size: 11px; "
@@ -1711,7 +1712,7 @@ class ProjectListEditDialog(QDialog):
 
     def _update_count(self):
         lines = [l for l in self._editor.toPlainText().splitlines() if l]
-        self._lbl_count.setText(f"{len(lines)} строк")
+        self._lbl_count.setText(f"{len(lines)} {tr('строк')}")
 
     def _accept(self):
         lines = [l for l in self._editor.toPlainText().splitlines()]
@@ -1738,7 +1739,7 @@ class ProjectTableEditDialog(QDialog):
         super().__init__(parent)
         import copy
         self._data = copy.deepcopy(tbl)
-        self.setWindowTitle(f"📊 Таблица: {tbl.get('name', '')}")
+        self.setWindowTitle(f"{tr('📊 Таблица')}: {tbl.get('name', '')}")
         self.resize(700, 600)
         self._build_ui()
         self._load_data()
@@ -1749,55 +1750,55 @@ class ProjectTableEditDialog(QDialog):
 
         # Имя
         row = QHBoxLayout()
-        row.addWidget(QLabel("Имя:"))
+        row.addWidget(QLabel(tr("Имя:")))
         self._name = QLineEdit()
         row.addWidget(self._name)
         lay.addLayout(row)
 
         # Файл
-        grp_file = QGroupBox("Источник файла (CSV/TSV)")
+        grp_file = QGroupBox(tr("Источник файла (CSV/TSV)"))
         gl = QFormLayout(grp_file)
 
         fp_row = QHBoxLayout()
         self._file_path = QLineEdit()
-        self._file_path.setPlaceholderText("Путь к CSV/TSV файлу (поддерживает {переменные})")
+        self._file_path.setPlaceholderText(tr("Путь к CSV/TSV файлу (поддерживает {переменные})"))
         btn_browse = QPushButton("📂")
         btn_browse.setFixedWidth(30)
         btn_browse.clicked.connect(self._browse_file)
         fp_row.addWidget(self._file_path)
         fp_row.addWidget(btn_browse)
-        gl.addRow("Путь к файлу:", fp_row)
+        gl.addRow(tr("Путь к файлу:"), fp_row)
 
         self._load_mode = QComboBox()
-        self._load_mode.addItem("📝 Статически (только ручной ввод)", "static")
-        self._load_mode.addItem("🔄 Загрузить из файла при старте проекта", "on_start")
-        self._load_mode.addItem("♻️ Всегда читать из файла при обращении", "always")
-        gl.addRow("Режим загрузки:", self._load_mode)
+        self._load_mode.addItem(tr("📝 Статически (только ручной ввод)"), "static")
+        self._load_mode.addItem(tr("🔄 Загрузить из файла при старте проекта"), "on_start")
+        self._load_mode.addItem(tr("♻️ Всегда читать из файла при обращении"), "always")
+        gl.addRow(tr("Режим загрузки:"), self._load_mode)
 
         self._encoding = QComboBox()
         self._encoding.addItems(["utf-8", "utf-8-sig", "cp1251", "latin-1"])
-        gl.addRow("Кодировка:", self._encoding)
+        gl.addRow(tr("Кодировка:"), self._encoding)
 
-        self._has_header = QCheckBox("Первая строка — заголовок")
+        self._has_header = QCheckBox(tr("Первая строка — заголовок"))
         self._has_header.setChecked(True)
         gl.addRow(self._has_header)
 
-        btn_load_now = QPushButton("📥 Загрузить из файла сейчас")
+        btn_load_now = QPushButton(tr("📥 Загрузить из файла сейчас"))
         btn_load_now.clicked.connect(self._load_from_file_now)
         gl.addRow(btn_load_now)
 
-        self._chk_save_contents = QCheckBox("💾 Сохранять содержимое в файле проекта")
-        self._chk_save_contents.setToolTip(
+        self._chk_save_contents = QCheckBox(tr("💾 Сохранять содержимое в файле проекта"))
+        self._chk_save_contents.setToolTip(tr(
             "Если ВЫКЛЮЧЕНО — данные таблицы НЕ будут храниться в .workflow.json\n"
             "и будут загружаться из файла при каждом открытии.\n"
             "Рекомендуется выключить для больших таблиц."
-        )
+        ))
         gl.addRow(self._chk_save_contents)
 
         lay.addWidget(grp_file)
 
         # Редактор колонок
-        grp_cols = QGroupBox("Колонки")
+        grp_cols = QGroupBox(tr("Колонки"))
         col_lay = QHBoxLayout(grp_cols)
         self._cols_list = QListWidget()
         self._cols_list.setMaximumWidth(180)
@@ -1817,13 +1818,13 @@ class ProjectTableEditDialog(QDialog):
         lay.addWidget(grp_cols)
 
         # Редактор строк
-        grp_rows = QGroupBox("Данные таблицы")
+        grp_rows = QGroupBox(tr("Данные таблицы"))
         row_lay = QVBoxLayout(grp_rows)
 
         row_toolbar = QHBoxLayout()
-        btn_add_row = QPushButton("➕ Строка")
+        btn_add_row = QPushButton(tr("➕ Строка"))
         btn_add_row.clicked.connect(self._add_row)
-        btn_del_row = QPushButton("🗑 Строку")
+        btn_del_row = QPushButton(tr("🗑 Строку"))
         btn_del_row.clicked.connect(self._del_row)
         lbl_rc = QLabel()
         self._lbl_row_count = lbl_rc
@@ -1883,7 +1884,7 @@ class ProjectTableEditDialog(QDialog):
                 for i in range(self._cols_list.count())]
 
     def _add_column(self):
-        name, ok = QInputDialog.getText(self, "Добавить колонку", "Имя колонки:")
+        name, ok = QInputDialog.getText(self, tr("Добавить колонку"), tr("Имя колонки:"))
         if ok and name.strip():
             self._cols_list.addItem(name.strip())
             cols = self._get_columns()
@@ -1903,7 +1904,7 @@ class ProjectTableEditDialog(QDialog):
         if row < 0:
             return
         old = self._cols_list.item(row).text()
-        name, ok = QInputDialog.getText(self, "Переименовать", "Новое имя:", text=old)
+        name, ok = QInputDialog.getText(self, tr("Переименовать"), tr("Новое имя:"), text=old)
         if ok and name.strip():
             self._cols_list.item(row).setText(name.strip())
             self._table.setHorizontalHeaderLabels(self._get_columns())
@@ -1922,7 +1923,7 @@ class ProjectTableEditDialog(QDialog):
             self._update_row_count()
 
     def _update_row_count(self):
-        self._lbl_row_count.setText(f"{self._table.rowCount()} строк")
+        self._lbl_row_count.setText(f"{self._table.rowCount()} {tr('строк')}")
 
     def _browse_file(self):
         path, _ = QFileDialog.getOpenFileName(
