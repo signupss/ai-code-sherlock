@@ -372,9 +372,6 @@ AI Code Sherlock/
 │   ├── dialogs/                        # Dialog windows
 │   │   ├── __init__.py
 │   │   ├── agent_constructor.py        # Main window for the AI agent creation wizard
-│   │   ├── agent_constructor1.py       # Step 1: Basic setup and agent role
-│   │   ├── agent_constructor2.py       # Step 2: Adding skills and permissions
-│   │   ├── agent_constructor3.py       # Step 3: Testing and saving the agent prompt
 │   │   ├── custom_strategy_editor.py   # Editor for custom refactoring strategies
 │   │   ├── error_map_dialog.py         # View and edit the error knowledge base
 │   │   ├── new_project_wizard.py       # New project creation wizard
