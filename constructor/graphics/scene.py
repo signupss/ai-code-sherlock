@@ -700,6 +700,7 @@ class WorkflowScene(QGraphicsScene):
     def update_edges(self):
         for ei in self._edge_items.values():
             ei.update_position()
+        self.update()
 
     def get_node_item(self, node_id: str) -> AgentNodeItem | None:
         return self._node_items.get(node_id)
@@ -1153,6 +1154,7 @@ class WorkflowScene(QGraphicsScene):
             AgentType.TABLE_OPERATION, AgentType.FILE_OPERATION,
             AgentType.DIR_OPERATION, AgentType.TEXT_PROCESSING,
             AgentType.JSON_XML, AgentType.VARIABLE_PROC, AgentType.RANDOM_GEN,
+            AgentType.PROJECT_IN_PROJECT,
         ]:
             icon = _AGENT_ICONS.get(at, "📜")
             translated_name = tr(at.value.replace('_', ' ').title())
@@ -1170,6 +1172,8 @@ class WorkflowScene(QGraphicsScene):
             (AgentType.BROWSER_CLOSE,       tr("🔴 Закрыть браузер")),
             (AgentType.BROWSER_AGENT,       tr("🌐🧠 Browser Agent (AI)")),
             (AgentType.BROWSER_PROFILE_OP,  tr("🪪 Операции с профилем")),
+            (AgentType.BROWSER_PARSE,       tr("🕸️ Парсинг текста из браузера")),
+            (AgentType.PROJECT_INFO,        tr("🔎 Информация о проекте")),
         ]
         for at, label in _browser_items:
             act = browser_menu.addAction(label)
@@ -1184,6 +1188,7 @@ class WorkflowScene(QGraphicsScene):
             (AgentType.PROGRAM_CLICK_IMAGE, tr("🖼 Клик по картинке")),
             (AgentType.PROGRAM_SCREENSHOT,  tr("📸 Скриншот программы")),
             (AgentType.PROGRAM_AGENT,       tr("🖥🧠 Program Agent (AI)")),
+            (AgentType.PROGRAM_INSPECTOR,   tr("🔬 Инспекция программы")),
         ]
         for at, label in _program_items:
             act = program_menu.addAction(label)
@@ -1196,6 +1201,21 @@ class WorkflowScene(QGraphicsScene):
         act_note = menu.addAction(tr("📌 Создать заметку"))
         act_note.triggered.connect(lambda checked, pos=event.scenePos(): 
             self._create_node_and_connect_if_needed(AgentType.NOTE, pos))
+
+        menu.addSeparator()
+
+        act_find_exits = menu.addAction(tr("✅ Поиск успешных выходов"))
+        act_find_exits.triggered.connect(
+            lambda: self._main_window._open_good_end_search() if self._main_window else None
+        )
+
+        menu.addSeparator()
+
+        # Поиск по проекту
+        act_search = menu.addAction(tr("🔍 Поиск по проекту  Ctrl+F"))
+        act_search.triggered.connect(
+            lambda: self._main_window._open_project_search() if self._main_window else None
+        )
 
         menu.addSeparator()
         

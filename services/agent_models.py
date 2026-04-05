@@ -74,6 +74,9 @@ class AgentType(str, Enum):
     PROGRAM_CLICK_IMAGE = "program_click_image"
     PROGRAM_SCREENSHOT  = "program_screenshot"
     PROGRAM_AGENT       = "program_agent"       # AI-агент управления программой
+    BROWSER_PARSE       = "browser_parse"       # Парсинг текста с браузера (интерактивный)
+    PROGRAM_INSPECTOR   = "program_inspector"   # Чтение всех элементов открытой программы
+    PROJECT_IN_PROJECT  = "project_in_project"  # Выполнить вложенный проект как подпроект
 
 
 class EdgeCondition(str, Enum):

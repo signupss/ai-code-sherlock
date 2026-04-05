@@ -55,6 +55,9 @@ _AGENT_COLORS = {
     AgentType.PROGRAM_CLICK_IMAGE:  "#FF6B6B",
     AgentType.PROGRAM_SCREENSHOT:   "#A9B1D6",
     AgentType.PROGRAM_AGENT:        "#FF9E64",
+    AgentType.BROWSER_PARSE:        "#00D4FF",
+    AgentType.PROGRAM_INSPECTOR:    "#C3E88D",
+    AgentType.PROJECT_IN_PROJECT:   "#E0AF68",
 }
 
 _AGENT_ICONS = {
@@ -107,6 +110,9 @@ _AGENT_ICONS = {
     AgentType.PROGRAM_CLICK_IMAGE:  "🖼",
     AgentType.PROGRAM_SCREENSHOT:   "📸",
     AgentType.PROGRAM_AGENT:        "🖥🧠",
+    AgentType.BROWSER_PARSE:        "🕸️",
+    AgentType.PROGRAM_INSPECTOR:    "🔬",
+    AgentType.PROJECT_IN_PROJECT:   "📦",
 }
 
 # ══════════════════════════════════════════════════════════
@@ -130,6 +136,9 @@ SNIPPET_TYPES = {
     AgentType.PROGRAM_ACTION,
     AgentType.PROGRAM_CLICK_IMAGE,
     AgentType.PROGRAM_SCREENSHOT,
+    AgentType.BROWSER_PARSE,
+    AgentType.PROGRAM_INSPECTOR,
+    AgentType.PROJECT_IN_PROJECT,
 }
 
 NOTE_TYPES = {AgentType.NOTE, AgentType.PROJECT_START}
@@ -167,6 +176,9 @@ _SNIPPET_ICONS = {
     AgentType.PROGRAM_ACTION:       "🎯",
     AgentType.PROGRAM_CLICK_IMAGE:  "🖼",
     AgentType.PROGRAM_SCREENSHOT:   "📸",
+    AgentType.BROWSER_PARSE:        "🕸️",
+    AgentType.PROGRAM_INSPECTOR:    "🔬",
+    AgentType.PROJECT_IN_PROJECT:   "📦",
 }
 
 

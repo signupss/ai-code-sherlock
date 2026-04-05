@@ -204,11 +204,15 @@ class ToolExecutor:
     async def _tool_shell_exec(self, params: dict) -> dict:
         cmd = params.get("command", "")
         timeout = params.get("timeout", 30)
+        # Используем cwd из params если есть, иначе self._root если существует
+        _cwd = params.get("cwd") or self._root
+        if _cwd and not os.path.exists(_cwd):
+            _cwd = None  # не падать если папка не существует
         self._log(f"💻 Shell: {cmd[:80]}")
         try:
             proc = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True,
-                timeout=timeout, cwd=self._root
+                timeout=timeout, cwd=_cwd
             )
             return {
                 "success": proc.returncode == 0,
@@ -476,10 +480,8 @@ class WorkflowRuntime(QThread):
         # Сохраняем browser_instance_id из предыдущих запусков если есть
         if project_variables and "browser_instance_id" in project_variables:
             self._context["browser_instance_id"] = project_variables["browser_instance_id"]
-            self._log(f"[DEBUG] Восстановлен browser_instance_id из project_variables: {project_variables['browser_instance_id']}")
         # Инъекция переменных проекта в контекст выполнения
         self._project_variables = project_variables  # Сохраняем всегда, даже если None
-        self._log(f"[DEBUG] configure: project_variables={type(project_variables)}, keys={list(project_variables.keys()) if project_variables else 'None'}")
         
         if project_variables:
             for var_name, var_data in project_variables.items():
@@ -957,6 +959,10 @@ class WorkflowRuntime(QThread):
                     full_response = await self._exec_browser_screenshot(node)
                 elif node.agent_type == AgentType.PROJECT_INFO:
                     full_response = await self._exec_project_info(node)
+                elif node.agent_type == AgentType.BROWSER_PARSE:
+                    full_response = await self._exec_browser_parse(node)
+                elif node.agent_type == AgentType.PROGRAM_INSPECTOR:
+                    full_response = await self._exec_program_inspector(node)
                 elif node.agent_type == AgentType.PROJECT_START:
                     full_response = await self._exec_project_start(node)
                 elif node.agent_type == AgentType.PROGRAM_OPEN:
@@ -969,6 +975,8 @@ class WorkflowRuntime(QThread):
                     full_response = await self._exec_program_screenshot(node)
                 elif node.agent_type == AgentType.PROGRAM_AGENT:
                     full_response = await self._exec_program_agent(node)
+                elif node.agent_type == AgentType.PROJECT_IN_PROJECT:
+                    full_response = await self._exec_project_in_project(node)
                 else:
                     # AI-powered agents (Code Reviewer, Tester, Verifier, etc.)
                     full_response = await self._call_model(node, messages, timeout)
@@ -1116,6 +1124,7 @@ class WorkflowRuntime(QThread):
                         AgentType.CODE_SNIPPET, AgentType.IF_CONDITION, AgentType.LOOP,
                         AgentType.VARIABLE_SET, AgentType.HTTP_REQUEST, AgentType.DELAY,
                         AgentType.LOG_MESSAGE, AgentType.SWITCH, AgentType.GOOD_END,
+                        AgentType.PROJECT_IN_PROJECT,
                         AgentType.BAD_END, AgentType.NOTIFICATION, AgentType.JS_SNIPPET,
                         AgentType.PROGRAM_LAUNCH, AgentType.LIST_OPERATION, AgentType.TABLE_OPERATION,
                         AgentType.FILE_OPERATION, AgentType.DIR_OPERATION, AgentType.TEXT_PROCESSING,
@@ -1123,6 +1132,7 @@ class WorkflowRuntime(QThread):
                         AgentType.BROWSER_LAUNCH, AgentType.BROWSER_ACTION, AgentType.BROWSER_CLOSE,
                         AgentType.BROWSER_CLICK_IMAGE, AgentType.BROWSER_SCREENSHOT,
                         AgentType.BROWSER_PROFILE_OP, AgentType.PROJECT_INFO,
+                        AgentType.BROWSER_PARSE, AgentType.PROGRAM_INSPECTOR,
                         AgentType.PROGRAM_OPEN, AgentType.PROGRAM_ACTION,
                         AgentType.PROGRAM_CLICK_IMAGE, AgentType.PROGRAM_SCREENSHOT,
                     }
@@ -2641,10 +2651,49 @@ INSTRUCTION: You MUST create ALL files listed in the project structure above. Do
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+        elif language in ("cpp", "csharp", "java", "go", "ruby", "php", "powershell", "batch"):
+            import tempfile, sys as _sys
+            _ext_map = {
+                "cpp": ".cpp", "csharp": ".cs", "java": ".java",
+                "go": ".go", "ruby": ".rb", "php": ".php",
+                "powershell": ".ps1", "batch": ".bat"
+            }
+            _run_map = {
+                "cpp": None,        # требует компиляции — shell
+                "csharp": None,     # dotnet-script или roslyn
+                "java": None,       # javac+java
+                "go": "go run",
+                "ruby": "ruby",
+                "php": "php",
+                "powershell": "powershell -ExecutionPolicy Bypass -File",
+                "batch": "",
+            }
+            _suffix = _ext_map[language]
+            with tempfile.NamedTemporaryFile(mode='w', suffix=_suffix, delete=False, encoding='utf-8') as tmp:
+                tmp.write(code)
+                tmp_path = tmp.name
+            try:
+                runner = _run_map.get(language, "")
+                if language == "batch":
+                    shell_cmd = f'"{tmp_path}"'
+                elif runner:
+                    shell_cmd = f'{runner} "{tmp_path}"'
+                else:
+                    # Fallback: shell пытается запустить напрямую
+                    shell_cmd = f'"{tmp_path}"'
+                result = await self._tool_executor.execute_tool("shell_exec", {
+                    "command": shell_cmd,
+                    **exec_params,
+                })
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
         else:
             result = await self._tool_executor.execute_tool("code_execute", {
                 "code": code,
-                **({"cwd": exec_params["cwd"]} if "cwd" in exec_params else {}),
+                **exec_params,
             })
         
         stdout = result.get("stdout", "")
@@ -2928,6 +2977,7 @@ INSTRUCTION: You MUST create ALL files listed in the project structure above. Do
                 'total': total,
                 'current_index': 0,
                 'exit_condition': exit_condition,
+                'exit_condition_raw': cfg.get('exit_condition', '') or '',
             }
             self._context["_loop_iteration"] = 0
             self._context["_loop_max"] = total
@@ -2951,9 +3001,21 @@ INSTRUCTION: You MUST create ALL files listed in the project structure above. Do
             self._log(f"  ✅ Цикл завершён: {i} итераций выполнено")
             return f"🔁 Цикл завершён ({i} итераций)"
         
-        # Проверяем условие выхода
-        if exit_cond:
+        # Проверяем условие выхода — динамическая подстановка актуальных переменных
+        exit_cond_raw = state.get('exit_condition_raw', state['exit_condition'])
+        if exit_cond_raw:
             try:
+                # Подставляем текущие значения из контекста (меняются в теле цикла)
+                exit_cond = exit_cond_raw
+                for k, v in self._context.items():
+                    if not k.startswith('_'):
+                        exit_cond = exit_cond.replace(f'{{{k}}}', str(v))
+                # Также подставляем из project_variables (видимые переменные проекта)
+                pv = getattr(self, '_project_variables', None)
+                if pv and isinstance(pv, dict):
+                    for k, v in pv.items():
+                        pval = v.get('value', v) if isinstance(v, dict) else str(v)
+                        exit_cond = exit_cond.replace(f'{{{k}}}', str(pval))
                 should_exit = eval(exit_cond, {"__builtins__": {}}, {
                     "ctx": self._context,
                     "context": self._context,
@@ -3095,16 +3157,10 @@ INSTRUCTION: You MUST create ALL files listed in the project structure above. Do
                     cur = int(cur) if not isinstance(cur, (int, float)) else cur
                 except (ValueError, TypeError):
                     cur = 0
-                self._context[var_name] = cur + step
-                # Синхронизация с проектом
-                if self._project_variables is not None:
-                    if var_name in self._project_variables:
-                        if isinstance(self._project_variables[var_name], dict):
-                            self._project_variables[var_name]['value'] = str(self._context[var_name])
-                        else:
-                            self._project_variables[var_name] = str(self._context[var_name])
-                        self.signals.variable_updated.emit(var_name, str(self._context[var_name]))
-                self._log(f"  📝 {var_name}: {cur} + {step} = {cur + step}")
+                new_val = cur + step
+                self._context[var_name] = new_val
+                self._sync_var_to_project(var_name, str(new_val))
+                self._log(f"  📝 {var_name}: {cur} + {step} = {new_val}")
                 set_count += 1
             elif operation == 'dec':
                 cur = self._context.get(var_name, 0)
@@ -3112,16 +3168,10 @@ INSTRUCTION: You MUST create ALL files listed in the project structure above. Do
                     cur = int(cur) if not isinstance(cur, (int, float)) else cur
                 except (ValueError, TypeError):
                     cur = 0
-                self._context[var_name] = cur - step
-                # Синхронизация с проектом
-                if self._project_variables is not None:
-                    if var_name in self._project_variables:
-                        if isinstance(self._project_variables[var_name], dict):
-                            self._project_variables[var_name]['value'] = str(self._context[var_name])
-                        else:
-                            self._project_variables[var_name] = str(self._context[var_name])
-                        self.signals.variable_updated.emit(var_name, str(self._context[var_name]))
-                self._log(f"  📝 {var_name}: {cur} - {step} = {cur - step}")
+                new_val = cur - step
+                self._context[var_name] = new_val
+                self._sync_var_to_project(var_name, str(new_val))
+                self._log(f"  📝 {var_name}: {cur} - {step} = {new_val}")
                 set_count += 1
             elif operation == 'append':
                 lst = self._context.get(var_name, [])
@@ -3131,27 +3181,21 @@ INSTRUCTION: You MUST create ALL files listed in the project structure above. Do
                     lst = [lst]
                 lst.append(auto_convert(var_value))
                 self._context[var_name] = lst
-                # Синхронизация с проектом
-                if self._project_variables is not None:
-                    if var_name in self._project_variables:
-                        if isinstance(self._project_variables[var_name], dict):
-                            self._project_variables[var_name]['value'] = str(self._context[var_name])
-                        else:
-                            self._project_variables[var_name] = str(self._context[var_name])
-                        self.signals.variable_updated.emit(var_name, str(self._context[var_name]))
+                self._sync_var_to_project(var_name, str(lst))
                 self._log(f"  📝 {var_name} += {var_value} (размер: {len(lst)})")
                 set_count += 1
             elif operation == 'delete':
                 if var_name in self._context:
                     del self._context[var_name]
-                    # Синхронизация с проектом
-                    if self._project_variables is not None:
+                    # Обнуляем в project_variables (не удаляем — переменная остаётся в UI)
+                    if self._project_variables is not None and isinstance(self._project_variables, dict):
                         if var_name in self._project_variables:
                             if isinstance(self._project_variables[var_name], dict):
-                                self._project_variables[var_name]['value'] = str(self._context[var_name])
+                                self._project_variables[var_name]['value'] = ''
                             else:
-                                self._project_variables[var_name] = str(self._context[var_name])
-                            self.signals.variable_updated.emit(var_name, str(self._context[var_name]))
+                                self._project_variables[var_name] = ''
+                            if hasattr(self, 'signals') and hasattr(self.signals, 'variable_updated'):
+                                self.signals.variable_updated.emit(var_name, '')
                     self._log(f"  📝 Удалено: {var_name}")
                     set_count += 1
         
@@ -3171,6 +3215,7 @@ INSTRUCTION: You MUST create ALL files listed in the project structure above. Do
                     continue
                 
                 self._context[key] = auto_convert(value)
+                self._sync_var_to_project(key, str(self._context[key]))
                 self._log(f"  📝 {key} = {self._context[key]} ({type(self._context[key]).__name__})")
                 set_count += 1
         
@@ -3185,19 +3230,24 @@ INSTRUCTION: You MUST create ALL files listed in the project structure above. Do
                 
                 if operation == 'set' or not var_name:
                     self._context[vname] = auto_convert(vvalue)
+                    self._sync_var_to_project(vname, str(self._context[vname]))
                     self._log(f"  📝 (таблица) {vname} = {self._context[vname]}")
                     set_count += 1
                 elif operation == 'inc':
                     cur = self._context.get(vname, 0)
                     try: cur = int(cur)
                     except: cur = 0
-                    self._context[vname] = cur + (int(vvalue) if vvalue else step)
+                    new_v = cur + (int(vvalue) if vvalue else step)
+                    self._context[vname] = new_v
+                    self._sync_var_to_project(vname, str(new_v))
                     set_count += 1
                 elif operation == 'dec':
                     cur = self._context.get(vname, 0)
                     try: cur = int(cur)
                     except: cur = 0
-                    self._context[vname] = cur - (int(vvalue) if vvalue else step)
+                    new_v = cur - (int(vvalue) if vvalue else step)
+                    self._context[vname] = new_v
+                    self._sync_var_to_project(vname, str(new_v))
                     set_count += 1
         
         # === СИНХРОНИЗАЦИЯ С ПРОЕКТНЫМИ ПЕРЕМЕННЫМИ ===
@@ -3364,9 +3414,11 @@ INSTRUCTION: You MUST create ALL files listed in the project structure above. Do
                     
                     if save_status:
                         self._context[status_var] = str(status)
+                        self._sync_var_to_project(status_var, str(status))
                     
                     if save_response and load_content != 'headers_only':
                         self._context[response_var] = body[:10000]
+                        self._sync_var_to_project(response_var, body[:10000])
                     
                     if load_content in ('headers_only', 'headers_and_content', 'as_file_and_headers'):
                         hdr_text = '\n'.join(f'{k}: {v}' for k, v in resp_headers.items())
@@ -3952,7 +4004,15 @@ except ImportError:
                 arguments = arguments.replace(f'{{{key}}}', str(val))
                 working_dir = working_dir.replace(f'{{{key}}}', str(val))
         
-        cmd = f'"{executable}" {arguments}' if arguments else f'"{executable}"'
+        import sys as _sys
+        _ext = os.path.splitext(executable)[1].lower()
+        if _ext == '.py':
+            _py = _sys.executable.replace('\\', '/')
+            cmd = f'"{_py}" "{executable}" {arguments}' if arguments else f'"{_py}" "{executable}"'
+        elif _ext in ('.sh',):
+            cmd = f'bash "{executable}" {arguments}' if arguments else f'bash "{executable}"'
+        else:
+            cmd = f'"{executable}" {arguments}' if arguments else f'"{executable}"'
         
         self._log(f"  ⚙️ Запуск: {cmd[:200]}")
         
@@ -3967,34 +4027,134 @@ except ImportError:
                             v = v.replace(f'{{{ck}}}', str(cv))
                     env_dict[k.strip()] = v.strip()
         
-        exec_params = {"command": cmd, "timeout": timeout}
-        if working_dir:
-            exec_params["cwd"] = working_dir
+        if no_wait:
+            # Запуск без ожидания — для GUI-приложений и фоновых процессов
+            try:
+                import subprocess as _sp
+                popen_kwargs = {'shell': True, 'stdin': _sp.DEVNULL}
+                if working_dir:
+                    popen_kwargs['cwd'] = working_dir
+                if env_dict:
+                    merged_env = os.environ.copy()
+                    merged_env.update(env_dict)
+                    popen_kwargs['env'] = merged_env
+                if hide_window:
+                    try:
+                        popen_kwargs['creationflags'] = _sp.CREATE_NO_WINDOW
+                    except AttributeError:
+                        pass  # Linux/macOS — не нужно
+                _sp.Popen(cmd, **popen_kwargs)
+                if save_exit_code:
+                    self._context[exit_code_var] = '0'
+                    self._sync_var_to_project(exit_code_var, '0')
+                self._log(f"  ✅ Программа запущена (no_wait): {cmd[:100]}")
+                return f"⚙️ Запущено (no_wait): {cmd[:100]}"
+            except Exception as e:
+                self._log(f"  ⚠ Ошибка запуска: {e}")
+                raise RuntimeError(f"Ошибка запуска программы: {e}")
+
+        # ── Запуск с ожиданием: Popen + async-polling (поддержка Stop + hide_window + timeout) ──
+        import subprocess as _sp
+        import time as _time
+
+        popen_kwargs = {
+            'shell': True,
+            'stdout': _sp.PIPE,
+            'stderr': _sp.PIPE,
+            'stdin':  _sp.DEVNULL,
+        }
+        _cwd = working_dir if working_dir and os.path.exists(working_dir) else None
+        if not _cwd and _ext == '.py':
+            # Для Python-скриптов без явной рабочей папки — используем папку самого скрипта
+            _script_dir = os.path.dirname(os.path.abspath(executable.strip('"')))
+            if _script_dir and os.path.exists(_script_dir):
+                _cwd = _script_dir
+        if not _cwd:
+            _root = getattr(self._tool_executor, '_root', '')
+            if _root and os.path.exists(_root):
+                _cwd = _root
+        if _cwd:
+            popen_kwargs['cwd'] = _cwd
         if env_dict:
-            exec_params["env"] = env_dict
-        
-        result = await self._tool_executor.execute_tool("shell_exec", exec_params)
-        
-        stdout = result.get("stdout", "")
-        stderr = result.get("stderr", "")
-        returncode = result.get("returncode", -1)
-        
+            _env = os.environ.copy()
+            _env.update(env_dict)
+            popen_kwargs['env'] = _env
+        if hide_window:
+            try:
+                popen_kwargs['creationflags'] = _sp.CREATE_NO_WINDOW
+            except AttributeError:
+                pass  # Linux/macOS
+
+        try:
+            proc = _sp.Popen(cmd, **popen_kwargs)
+        except Exception as e:
+            self._log(f"  ⚠ Не удалось запустить процесс: {e}")
+            raise RuntimeError(f"Ошибка запуска программы: {e}")
+
+        _deadline = _time.time() + timeout
+        returncode = -1
+        out_b = b''
+        err_b = b''
+        try:
+            while True:
+                # ── Проверка кнопки Stop ──
+                if getattr(self, '_stop_requested', False):
+                    proc.kill()
+                    try: proc.wait(timeout=2)
+                    except Exception: pass
+                    self._log("  🛑 Программа остановлена по сигналу Stop")
+                    returncode = -9
+                    break
+                ret = proc.poll()
+                if ret is not None:
+                    returncode = ret
+                    break
+                # ── Проверка таймаута ──
+                if _time.time() >= _deadline:
+                    proc.kill()
+                    try: proc.wait(timeout=2)
+                    except Exception: pass
+                    self._log(f"  ⏱ Таймаут {timeout}с — программа остановлена")
+                    returncode = -2
+                    break
+                await asyncio.sleep(0.25)
+        finally:
+            try:
+                out_b, err_b = proc.communicate(timeout=3)
+            except Exception:
+                try: out_b, err_b = proc.stdout.read(), proc.stderr.read()
+                except Exception: pass
+
+        stdout = out_b.decode('utf-8', errors='replace')[-4000:] if out_b else ''
+        stderr = err_b.decode('utf-8', errors='replace')[-2000:] if err_b else ''
+
         output = f"⚙️ Program: exit={returncode}\n"
-        
+
         if save_exit_code:
             self._context[exit_code_var] = str(returncode)
+            self._sync_var_to_project(exit_code_var, str(returncode))
         if stdout:
             output += f"STDOUT:\n{stdout[:3000]}\n"
             if save_stdout:
                 self._context[stdout_var] = stdout.strip()
+                self._sync_var_to_project(stdout_var, stdout.strip())
         if stderr:
             output += f"STDERR:\n{stderr[:2000]}\n"
             if save_stderr:
                 self._context[stderr_var] = stderr.strip()
-        
-        if returncode != 0 and not no_wait:
+                self._sync_var_to_project(stderr_var, stderr.strip())
+
+        if returncode == -9:
+            self._log("  🛑 Программа остановлена вручную")
+        elif returncode == -2:
+            self._log(f"  ⏱ Программа остановлена по таймауту ({timeout}с)")
+        elif returncode != 0:
             self._log(f"  ⚠ Программа завершилась с кодом {returncode}")
-        
+            # Показываем stderr прямо в лог чтобы пользователь видел причину краша
+            if stderr:
+                for _line in stderr.strip().splitlines()[-15:]:  # последние 15 строк
+                    self._log(f"    ❗ {_line}")
+
         self._log(f"  ✅ Программа завершена (exit={returncode})")
         return output
 
@@ -5022,6 +5182,9 @@ except ImportError:
             else:
                 self._context[result_list] = files
                 self._context[result_var] = str(len(files))
+                self._sync_var_to_project(result_var, str(len(files)))
+                if result_list:
+                    self._sync_list_to_metadata(result_list, files)
                 return f"📁 Найдено: {len(files)} элементов"
         elif action in ('copy', 'move'):
             import shutil
@@ -5059,7 +5222,9 @@ except ImportError:
             if not matches and error_on_empty: raise RuntimeError(f"Regex не нашёл: {pattern[:60]}")
             if take_mode == 'first': val = matches[0] if matches else ''
             elif take_mode == 'all':
-                if result_list: self._context[result_list] = matches
+                if result_list:
+                    self._context[result_list] = matches
+                    self._sync_list_to_metadata(result_list, [str(m) for m in matches])
                 val = '\n'.join(str(m) for m in matches)
             elif take_mode == 'random': val = _rnd.choice(matches) if matches else ''
             elif take_mode == 'by_index': val = matches[min(match_index, len(matches)-1)] if matches else ''
@@ -5075,7 +5240,9 @@ except ImportError:
             return f"✂️ Замена: {len(result)} символов"
         elif action == 'split':
             parts = input_text.split(separator)
-            if result_list: self._context[result_list] = parts
+            if result_list:
+                self._context[result_list] = parts
+                self._sync_list_to_metadata(result_list, parts)
             self._context[result_var] = str(len(parts))
             self._sync_var_to_project(result_var, str(len(parts)))
             return f"✂️ Split: {len(parts)} частей"
@@ -5121,7 +5288,9 @@ except ImportError:
         elif action == 'to_list':
             sep = separator.replace('\\n', '\n').replace('\\t', '\t')
             parts = input_text.split(sep)
-            if result_list: self._context[result_list] = parts
+            if result_list:
+                self._context[result_list] = parts
+                self._sync_list_to_metadata(result_list, parts)
             self._context[result_var] = str(len(parts))
             self._sync_var_to_project(result_var, str(len(parts)))
         return f"✂️ {action}: → {str(self._context.get(result_var, ''))[:80]}"
@@ -5174,7 +5343,9 @@ except ImportError:
             if action == 'parse':
                 data = _json.loads(raw)
                 self._context['_parsed_json'] = data
-                self._context[result_var] = _json.dumps(data, ensure_ascii=False, indent=2)[:1000]
+                parsed_str = _json.dumps(data, ensure_ascii=False, indent=2)[:1000]
+                self._context[result_var] = parsed_str
+                self._sync_var_to_project(result_var, parsed_str)
                 return f"🔣 JSON parsed ({len(raw)} chars)"
             elif action == 'get_value':
                 data = self._context.get('_parsed_json') or _json.loads(raw)
@@ -5183,8 +5354,10 @@ except ImportError:
                 for k in keys:
                     if k.isdigit(): val = val[int(k)]
                     else: val = val[k]
-                self._context[result_var] = str(val) if not isinstance(val, str) else val
-                return f"🔣 JSON get: {key_path} = {str(val)[:80]}"
+                result_str = str(val) if not isinstance(val, str) else val
+                self._context[result_var] = result_str
+                self._sync_var_to_project(result_var, result_str)
+                return f"🔣 JSON get: {key_path} = {result_str[:80]}"
             elif action == 'set_value':
                 data = self._context.get('_parsed_json') or _json.loads(raw)
                 keys = key_path.replace('[', '.').replace(']', '').split('.')
@@ -5198,7 +5371,9 @@ except ImportError:
                 else:
                     obj[last_key] = set_value
                 self._context['_parsed_json'] = data
-                self._context[result_var] = _json.dumps(data, ensure_ascii=False, indent=2)[:1000]
+                result_str = _json.dumps(data, ensure_ascii=False, indent=2)[:1000]
+                self._context[result_var] = result_str
+                self._sync_var_to_project(result_var, result_str)
                 return f"🔣 JSON set: {key_path} = {set_value[:40]}"
             elif action == 'query':
                 data = self._context.get('_parsed_json') or _json.loads(raw)
@@ -5215,8 +5390,13 @@ except ImportError:
                         elif k.isdigit(): val = val[int(k)]
                         else: val = val[k]
                     matches = val if isinstance(val, list) else [val]
-                if result_list: self._context[result_list] = [str(m) for m in matches]
-                self._context[result_var] = str(matches[0]) if matches else ''
+                str_matches = [str(m) for m in matches]
+                if result_list:
+                    self._context[result_list] = str_matches
+                    self._sync_list_to_metadata(result_list, str_matches)
+                first = str_matches[0] if str_matches else ''
+                self._context[result_var] = first
+                self._sync_var_to_project(result_var, first)
                 return f"🔣 JsonPath: {len(matches)} результатов"
             elif action == 'to_list':
                 data = self._context.get('_parsed_json') or _json.loads(raw)
@@ -5225,22 +5405,32 @@ except ImportError:
                 for k in keys:
                     arr = arr[k]
                 vals = [str(item.get(prop_name, item) if isinstance(item, dict) else item) for item in arr]
-                if result_list: self._context[result_list] = vals
-                self._context[result_var] = str(len(vals))
+                if result_list:
+                    self._context[result_list] = vals
+                    self._sync_list_to_metadata(result_list, vals)
+                count_str = str(len(vals))
+                self._context[result_var] = count_str
+                self._sync_var_to_project(result_var, count_str)
                 return f"🔣 JSON to_list: {len(vals)} элементов"
         else:
             import xml.etree.ElementTree as ET
             if action == 'parse':
                 root = ET.fromstring(raw)
                 self._context['_parsed_xml_str'] = raw
-                self._context[result_var] = f"XML root: {root.tag}, children: {len(root)}"
+                parse_result = f"XML root: {root.tag}, children: {len(root)}"
+                self._context[result_var] = parse_result
+                self._sync_var_to_project(result_var, parse_result)
                 return f"🔣 XML parsed: {root.tag}"
             elif action == 'query':
                 root = ET.fromstring(self._context.get('_parsed_xml_str', raw))
                 results = root.findall(query_expr)
                 vals = [el.text or '' for el in results]
-                if result_list: self._context[result_list] = vals
-                self._context[result_var] = vals[0] if vals else ''
+                if result_list:
+                    self._context[result_list] = vals
+                    self._sync_list_to_metadata(result_list, vals)
+                first = vals[0] if vals else ''
+                self._context[result_var] = first
+                self._sync_var_to_project(result_var, first)
                 return f"🔣 XPath: {len(vals)} результатов"
         return f"🔣 {action} done"
 
@@ -5291,6 +5481,15 @@ except ImportError:
             result_msg = f"🔧 {var_name}: {cur} → {new_val}"
         elif action == 'clear':
             self._context.pop(var_name, None)
+            # Обнуляем в project_variables, не удаляем — переменная остаётся видима в UI
+            if self._project_variables is not None and isinstance(self._project_variables, dict):
+                if var_name in self._project_variables:
+                    if isinstance(self._project_variables[var_name], dict):
+                        self._project_variables[var_name]['value'] = ''
+                    else:
+                        self._project_variables[var_name] = ''
+                    if hasattr(self, 'signals') and hasattr(self.signals, 'variable_updated'):
+                        self.signals.variable_updated.emit(var_name, '')
             result_msg = f"🔧 Очищено: {var_name}"
         elif action == 'clear_all':
             except_list = {e.strip() for e in clear_except.split(',') if e.strip()}
@@ -5337,25 +5536,23 @@ except ImportError:
         # === СИНХРОНИЗАЦИЯ С ПЕРЕМЕННЫМИ ПРОЕКТА ===
         if save_to_project and changed_vars:
             project_vars = getattr(self, '_project_variables', None)
-            callback = getattr(self, '_update_callback', None)
             for vname, vval in changed_vars:
-                if project_vars and isinstance(project_vars, dict):
+                if project_vars is not None and isinstance(project_vars, dict):
                     if vname in project_vars:
-                        # Обновляем существующую
                         if isinstance(project_vars[vname], dict):
                             project_vars[vname]['value'] = str(vval)
                         else:
                             project_vars[vname] = str(vval)
                         self._log(f"  📝 Обновлена переменная проекта: {vname} = {str(vval)[:60]}")
                     else:
-                        # ═══ ИСПРАВЛЕНИЕ: создаём переменную если её нет ═══
-                        project_vars[vname] = str(vval)
+                        project_vars[vname] = {
+                            'value': str(vval),
+                            'default': '',
+                            'type': 'string'
+                        }
                         self._log(f"  📝 Создана переменная проекта: {vname} = {str(vval)[:60]}")
-                    if callback:
-                        try:
-                            callback(vname, str(vval))
-                        except Exception as e:
-                            self._log(f"  ⚠ Ошибка callback: {e}")
+                    if hasattr(self, 'signals') and hasattr(self.signals, 'variable_updated'):
+                        self.signals.variable_updated.emit(vname, str(vval))
         
         return result_msg
 
@@ -5454,37 +5651,22 @@ except ImportError:
         project_vars = getattr(self, '_project_variables', None)
         self._log(f"  [DEBUG] result_var={result_var}, clean_var={clean_var_name}, project_vars exists={project_vars is not None}")
         
-        if project_vars:
-            self._log(f"  [DEBUG] project_vars type={type(project_vars)}, keys={list(project_vars.keys()) if isinstance(project_vars, dict) else 'N/A'}")
-            
-            # Проверяем есть ли result_var в project_variables (используем очищенное имя)
-            if isinstance(project_vars, dict) and clean_var_name in project_vars:
-                # ═══ ПРАВИЛЬНЫЙ ПОРЯДОК: сначала callback (читает старое), потом модель ═══
-                # Но на самом деле callback должен читать ИЗ МОДЕЛИ, поэтому:
-                # 1. Сначала обновляем модель
-                # 2. Потом вызываем callback (который прочитает новое значение из модели)
-                
-                # Обновляем значение В МОДЕЛИ
+        if project_vars is not None and isinstance(project_vars, dict):
+            if clean_var_name in project_vars:
                 if isinstance(project_vars[clean_var_name], dict):
                     project_vars[clean_var_name]['value'] = str(val)
                 else:
-                    # Если структура другая — просто присваиваем
                     project_vars[clean_var_name] = str(val)
-                
                 self._log(f"  📝 Обновлена переменная проекта: {clean_var_name} = {val}")
-                
-                # 2. Вызываем callback для обновления UI (после обновления модели!)
-                callback = getattr(self, '_update_callback', None)
-                if callback:
-                    try:
-                        callback(clean_var_name, str(val))
-                        self._log(f"  [DEBUG] Callback вызван успешно")
-                    except Exception as e:
-                        self._log(f"  ⚠ Ошибка callback UI: {e}")
             else:
-                self._log(f"  [DEBUG] Переменная '{clean_var_name}' не найдена в project_variables (исходное: '{result_var}')")
-        else:
-            self._log(f"  [DEBUG] _project_variables не установлен")
+                project_vars[clean_var_name] = {
+                    'value': str(val),
+                    'default': '',
+                    'type': 'string'
+                }
+                self._log(f"  📝 Создана переменная проекта: {clean_var_name} = {val}")
+            if hasattr(self, 'signals') and hasattr(self.signals, 'variable_updated'):
+                self.signals.variable_updated.emit(clean_var_name, str(val))
         
         return f"🎲 {rtype}: {val}"
     
@@ -5755,7 +5937,151 @@ except ImportError:
         except Exception as e:
             import traceback
             return f"❌ Screenshot ошибка: {e}\n{traceback.format_exc()[:300]}"
+    
+    async def _exec_project_in_project(self, node) -> str:
+        """Выполнить вложенный проект как подпроект с передачей переменных."""
+        import copy
+        from services.agent_models import AgentWorkflow
 
+        cfg = getattr(node, 'snippet_config', {}) or {}
+
+        # ── 1. Разрешаем путь к проекту (поддержка {переменных}) ──────────────
+        raw_path = cfg.get('project_path', '').strip()
+        if not raw_path:
+            raise RuntimeError("PROJECT_IN_PROJECT: не задан путь к вложенному проекту")
+
+        resolved_path = self._resolve_variables(raw_path)
+        project_file = Path(resolved_path)
+
+        # Если файл не найден — пробуем рядом с текущим проектом
+        if not project_file.exists() and self._project_root:
+            project_file = Path(self._project_root) / resolved_path
+
+        if not project_file.exists():
+            raise FileNotFoundError(f"PROJECT_IN_PROJECT: файл не найден: {project_file}")
+
+        self._log(f"📦 Загружаю вложенный проект: {project_file}")
+
+        # ── 2. Загружаем sub-workflow ──────────────────────────────────────────
+        try:
+            sub_workflow = AgentWorkflow.load(str(project_file))
+        except Exception as e:
+            raise RuntimeError(f"PROJECT_IN_PROJECT: ошибка загрузки проекта: {e}")
+
+        # ── 3. Формируем сопоставление переменных (outer → inner) ─────────────
+        match_same = cfg.get('match_same_names', True)
+        no_return_on_fail = cfg.get('no_return_on_fail', False)
+
+        # Парсим ручное сопоставление из текстового поля:
+        # Формат: "outer_var = inner_var" (по одному на строку, # — комментарий)
+        manual_map: dict[str, str] = {}   # {inner_name: outer_name}
+        var_map_text = cfg.get('var_map', '')
+        for line in var_map_text.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if '=' in line:
+                outer, inner = line.split('=', 1)
+                outer = outer.strip()
+                inner = inner.strip()
+                if outer and inner:
+                    manual_map[inner] = outer  # inner_var ← outer_var
+
+        # ── 4. Снимаем текущие переменные внешнего проекта ────────────────────
+        outer_vars: dict = {}
+        if self._project_variables is not None:
+            outer_vars = dict(self._project_variables)
+        # Также смотрим в execution context
+        outer_vars.update({k: v for k, v in self._context.items()
+                           if not k.startswith('_')})
+
+        # ── 5. Заполняем переменные sub-workflow ──────────────────────────────
+        sub_vars: dict = dict(sub_workflow.project_variables)
+
+        for inner_name in list(sub_vars.keys()):
+            # Ручное сопоставление (высший приоритет)
+            if inner_name in manual_map:
+                outer_name = manual_map[inner_name]
+                if outer_name in outer_vars:
+                    val = outer_vars[outer_name]
+                    if isinstance(sub_vars[inner_name], dict):
+                        sub_vars[inner_name]['value'] = val
+                    else:
+                        sub_vars[inner_name] = val
+            elif match_same and inner_name in outer_vars:
+                # Автосопоставление по одинаковым именам
+                val = outer_vars[inner_name]
+                if isinstance(sub_vars[inner_name], dict):
+                    sub_vars[inner_name]['value'] = val
+                else:
+                    sub_vars[inner_name] = val
+
+        sub_workflow.project_variables = sub_vars
+
+        # ── 6. Запускаем sub-workflow ──────────────────────────────────────────
+        # Используем тот же класс WorkflowRuntime, но без Qt-сигналов UI
+        sub_context: dict = {}
+        sub_success = True
+        sub_error = ""
+
+        try:
+            # Строим плоский context из sub_vars для sub-runtime
+            flat_sub_vars: dict = {}
+            for k, v in sub_vars.items():
+                flat_sub_vars[k] = v['value'] if isinstance(v, dict) and 'value' in v else v
+
+            sub_runtime = WorkflowRuntime(
+                workflow=sub_workflow,
+                model_manager=self._model_manager,
+                logger=lambda msg: self._log(f"  [SUB] {msg}"),
+                project_root=str(project_file.parent),
+            )
+            # Передаём контекст как начальные project_variables
+            sub_runtime._project_variables = flat_sub_vars
+            sub_runtime._context = copy.deepcopy(flat_sub_vars)
+
+            # Запускаем синхронно в текущем event loop
+            await sub_runtime._run_workflow_async()
+
+            # Забираем итоговый контекст
+            sub_context = sub_runtime._context or {}
+            if sub_runtime._project_variables:
+                sub_context.update(sub_runtime._project_variables)
+
+        except Exception as e:
+            sub_success = False
+            sub_error = str(e)
+            self._log(f"  ❌ Вложенный проект завершился с ошибкой: {e}")
+            if no_return_on_fail:
+                raise RuntimeError(f"PROJECT_IN_PROJECT failed: {e}")
+
+        # ── 7. Возвращаем переменные из sub-workflow в outer ──────────────────
+        if sub_success or not no_return_on_fail:
+            # Обратное сопоставление: inner → outer
+            outer_inner_map: dict[str, str] = {v: k for k, v in manual_map.items()}
+            # manual_map: {inner: outer} → outer_inner_map: {inner: outer} (для обратного копирования)
+
+            for inner_name, inner_val in sub_context.items():
+                if inner_name.startswith('_'):
+                    continue
+
+                outer_name = None
+
+                # Ручное сопоставление: ищем inner_name в manual_map
+                if inner_name in manual_map:
+                    outer_name = manual_map[inner_name]
+                elif match_same and inner_name in outer_vars:
+                    outer_name = inner_name
+
+                if outer_name and self._project_variables is not None:
+                    self._project_variables[outer_name] = inner_val
+                    self._context[outer_name] = inner_val
+                    self._log(f"  ↩ {inner_name} → {outer_name} = {str(inner_val)[:60]}")
+
+        status = "✅ успешно" if sub_success else f"❌ ошибка: {sub_error}"
+        self._log(f"📦 Вложенный проект завершён: {status}")
+        return f"project_in_project: {status}"
+    
     async def _exec_project_info(self, node) -> str:
         """🔎 Project Info — системная информация о проекте."""
         import json
@@ -5883,7 +6209,125 @@ except ImportError:
                         self._project_variables[result_list_var] = list(names)
                         self.signals.variable_updated.emit(result_list_var, str(...))
             return f"🔎 Узлов: {len(names)}"
+        
+        # ── Открытые программы ────────────────────────────────────────────
+        if info_type == 'open_programs':
+            # Сначала берём из реестра PROGRAM_OPEN (контекст + metadata)
+            _registered = {}
+            for _pid_str, _e in self._context.get('_open_programs', {}).items():
+                _registered[_pid_str] = {
+                    'hwnd': int(_e.get('hwnd', 0) or 0),
+                    'pid':  int(_pid_str),
+                    'title': str(_e.get('name', '') or _e.get('exe', '')),
+                    'exe':  str(_e.get('exe', '')),
+                }
+            _meta = getattr(self._workflow, 'metadata', None) or {}
+            for _pid_str, _e in _meta.get('_open_programs_meta', {}).items():
+                if _pid_str not in _registered:
+                    _registered[_pid_str] = {
+                        'hwnd': int(_e.get('hwnd', 0) or 0),
+                        'pid':  int(_pid_str),
+                        'title': str(_e.get('name', '') or _e.get('exe', '')),
+                        'exe':  str(_e.get('exe', '')),
+                    }
+            if _registered:
+                programs = list(_registered.values())
+                out = json.dumps(programs, ensure_ascii=False)
+                _set(result_var, out)
+                if result_list_var:
+                    titles = [p['title'] for p in programs]
+                    self._context[result_list_var] = titles
+                    if self._project_variables is not None and isinstance(self._project_variables, dict):
+                        self._project_variables[result_list_var] = titles
+                        self.signals.variable_updated.emit(result_list_var, str(titles))
+                self._log(f"🖥 Открытых программ (PROGRAM_OPEN): {len(programs)}")
+                return f"🖥 Программ: {len(programs)}"
+            # Fallback: если PROGRAM_OPEN не запускался — перечисляем системные окна
+            try:
+                import psutil, ctypes
+                from ctypes import wintypes
+                programs = []
+                EnumWindows = ctypes.windll.user32.EnumWindows
+                GetWindowText = ctypes.windll.user32.GetWindowTextW
+                IsWindowVisible = ctypes.windll.user32.IsWindowVisible
+                GetWindowThreadProcessId = ctypes.windll.user32.GetWindowThreadProcessId
+                buf = ctypes.create_unicode_buffer(512)
+                pids_seen = set()
+                def _enum_cb(hwnd, _):
+                    if IsWindowVisible(hwnd):
+                        GetWindowText(hwnd, buf, 512)
+                        title = buf.value.strip()
+                        if title:
+                            pid = wintypes.DWORD()
+                            GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                            pid_val = pid.value
+                            if pid_val not in pids_seen:
+                                pids_seen.add(pid_val)
+                                try:
+                                    proc = psutil.Process(pid_val)
+                                    exe = proc.exe()
+                                except Exception:
+                                    exe = ''
+                                programs.append({
+                                    'hwnd': int(hwnd), 'pid': int(pid_val),
+                                    'title': str(title), 'exe': str(exe)
+                                })
+                    return True
+                WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, ctypes.c_void_p)
+                EnumWindows(WNDENUMPROC(_enum_cb), 0)
+            except Exception as e:
+                programs = []
+                self._log(f"⚠ open_programs: {e}")
+            out = json.dumps(programs, ensure_ascii=False)
+            _set(result_var, out)
+            if result_list_var:
+                titles = [p['title'] for p in programs]
+                self._context[result_list_var] = titles
+                if self._project_variables is not None and isinstance(self._project_variables, dict):
+                    self._project_variables[result_list_var] = titles
+                    self.signals.variable_updated.emit(result_list_var, str(...))
+            self._log(f"🖥 Открытых программ: {len(programs)}")
+            return f"🖥 Программ: {len(programs)}"
 
+        # ── Настройки проекта ─────────────────────────────────────
+        if info_type == 'project_settings':
+            try:
+                wf = getattr(self, '_workflow', None)
+                settings = {}
+                if wf:
+                    settings = {
+                        'name':           getattr(wf, 'name', ''),
+                        'description':    getattr(wf, 'description', ''),
+                        'max_total_steps': getattr(wf, 'max_total_steps', 0),
+                        'entry_node_id':  getattr(wf, 'entry_node_id', ''),
+                        'node_count':     len(getattr(wf, 'nodes', [])),
+                        'edge_count':     len(getattr(wf, 'edges', [])),
+                        'metadata':       getattr(wf, 'metadata', {}),
+                    }
+            except Exception as e:
+                settings = {}
+                self._log(f"⚠ project_settings: {e}")
+            out = json.dumps(settings, ensure_ascii=False)
+            _set(result_var, out)
+            self._log(f"⚙️ Настройки проекта получены")
+            return f"⚙️ Настройки проекта сохранены в {result_var}"
+
+        # ── БД проекта ────────────────────────────────────────────
+        if info_type == 'project_db':
+            try:
+                pv = self._project_variables or {}
+                tables = {
+                    k: v for k, v in pv.items()
+                    if isinstance(v, list) and v and isinstance(v[0], (list, dict))
+                }
+            except Exception as e:
+                tables = {}
+                self._log(f"⚠ project_db: {e}")
+            out = json.dumps(tables, ensure_ascii=False)
+            _set(result_var, out)
+            self._log(f"🗄 Таблиц (БД) в проекте: {len(tables)}")
+            return f"🗄 БД проекта: {len(tables)} таблиц → {result_var}"
+        
         # ── Всё сразу ─────────────────────────────────────────────
         if info_type == 'all':
             pv = self._project_variables or {}
@@ -5897,7 +6341,646 @@ except ImportError:
             return f"🔎 Информация о проекте сохранена"
 
         return f"🔎 Неизвестный тип: {info_type}"
-    
+        
+    async def _exec_browser_parse(self, node) -> str:
+        """🕸️ Browser Parse — парсинг текста из браузера."""
+        import asyncio, json as _json
+        cfg = getattr(node, 'snippet_config', {}) or {}
+        pick_mode       = cfg.get('pick_mode', 'interactive')
+        css_sel         = cfg.get('css_selector', '').strip()
+        xpath_sel       = cfg.get('xpath_selector', '').strip()
+        picked_selector = cfg.get('picked_selector', '').strip()   # из пикера
+        ai_prompt       = cfg.get('ai_prompt', '').strip()
+        parse_type      = cfg.get('parse_type', 'first')
+        save_to         = cfg.get('save_to', 'variable')
+        result_var      = cfg.get('result_var', 'parsed_text').strip().strip('{}')
+        result_list     = cfg.get('result_list', '').strip().strip('{}')
+        result_table    = cfg.get('result_table', '').strip().strip('{}')
+        wait_ms         = int(cfg.get('wait_load', 1500) or 0)
+        fallback_ai     = bool(cfg.get('fallback_ai', True))
+        on_error        = cfg.get('on_error', 'empty')
+        browser_var_key = cfg.get('browser_instance_var', 'browser_instance_id').strip().strip('{}')
+
+        # ── Найти инстанс браузера (как в Screenshot) ────────────────
+        from constructor.browser_module import BrowserManager
+        pbm = getattr(self, 'project_browser_manager', None)
+        mgr = (pbm._manager if pbm and hasattr(pbm, '_manager') else None) or BrowserManager.get()
+
+        iid = self._context.get(browser_var_key, '')
+        if not iid:
+            iid = self._context.get('browser_instance_id', '')
+        if not iid and pbm and hasattr(pbm, 'first_instance_id'):
+            iid = pbm.first_instance_id()
+        inst = (pbm.get_instance(iid) if pbm and iid else None) or (mgr.get_instance(iid) if iid else None)
+        if inst is None:
+            all_inst = mgr.all_instances() if hasattr(mgr, 'all_instances') else {}
+            inst = next((i for i in all_inst.values() if getattr(i, 'is_running', False)), None) \
+                   or next(iter(all_inst.values()), None)
+        if inst is None:
+            raise RuntimeError("Браузер не найден. Запустите Browser Launch перед парсингом.")
+
+        # ── Получить Selenium driver ──────────────────────────────────
+        drv = getattr(inst, '_driver', None)
+        if drv is None:
+            raise RuntimeError("Selenium driver недоступен. Playwright не поддерживается этим сниппетом.")
+
+        def _save(value):
+            if save_to == 'variable' and result_var:
+                v = value if isinstance(value, str) else _json.dumps(value, ensure_ascii=False)
+                self._context[result_var] = v
+                self._sync_var_to_project(result_var, v)
+            elif save_to == 'list' and result_list:
+                lst = value if isinstance(value, list) else [value]
+                self._context[result_list] = lst
+                if self._project_variables is not None:
+                    self._project_variables[result_list] = lst
+                    self.signals.variable_updated.emit(result_list, str(...))
+            elif save_to == 'table' and result_table:
+                tbl = value if isinstance(value, list) else [[value]]
+                if self._project_variables is not None:
+                    self._project_variables[result_table] = tbl
+                    self.signals.variable_updated.emit(result_table, str(...))
+
+        def _by_selector(sel, all_matches=False):
+            """Selenium CSS-поиск с возвратом текста."""
+            from selenium.webdriver.common.by import By
+            try:
+                if all_matches:
+                    els = drv.find_elements(By.CSS_SELECTOR, sel)
+                    return [e.text or e.get_attribute('textContent') or '' for e in els if e]
+                else:
+                    el = drv.find_element(By.CSS_SELECTOR, sel)
+                    return [el.text or el.get_attribute('textContent') or ''] if el else []
+            except Exception as ex:
+                self._log(f"⚠ CSS-selector '{sel}': {ex}")
+                return []
+
+        def _by_xpath(sel, all_matches=False):
+            from selenium.webdriver.common.by import By
+            try:
+                if all_matches:
+                    els = drv.find_elements(By.XPATH, sel)
+                    return [e.text or '' for e in els if e]
+                else:
+                    el = drv.find_element(By.XPATH, sel)
+                    return [el.text or ''] if el else []
+            except Exception as ex:
+                self._log(f"⚠ XPath '{sel}': {ex}")
+                return []
+
+        try:
+            if wait_ms > 0:
+                await asyncio.sleep(wait_ms / 1000.0)
+
+            results = []
+            found = False
+
+            # interactive — использует CSS-селектор из пикера
+            if pick_mode == 'interactive':
+                if picked_selector:
+                    self._log(f"🖱 Интерактивный: CSS-селектор из пикера: {picked_selector}")
+                    results = _by_selector(picked_selector, parse_type == 'all_matches')
+                    found = bool(results)
+                else:
+                    self._log("⚠ Интерактивный режим: селектор не выбран. Откройте свойства сниппета и нажмите '🖱 Открыть пикер'.")
+                    _save('')
+                    return "⚠ Пикер: элемент не выбран. Используйте кнопку в настройках сниппета."
+
+            elif pick_mode == 'css' and css_sel:
+                results = _by_selector(css_sel, parse_type == 'all_matches')
+                found = bool(results)
+
+            elif pick_mode == 'xpath' and xpath_sel:
+                results = _by_xpath(xpath_sel, parse_type == 'all_matches')
+                found = bool(results)
+
+            elif pick_mode == 'page_text':
+                try:
+                    results = [drv.execute_script(
+                        "return document.body ? document.body.innerText : document.documentElement.innerText;"
+                    ) or '']
+                    found = True
+                except Exception as ex:
+                    results = [drv.page_source or '']
+                    found = True
+
+            elif pick_mode == 'tables':
+                try:
+                    raw = drv.execute_script("""
+return Array.from(document.querySelectorAll('table')).map(function(t){
+  return Array.from(t.querySelectorAll('tr')).map(function(r){
+    return Array.from(r.querySelectorAll('td,th')).map(function(c){
+      return (c.innerText||'').trim();
+    });
+  });
+});""")
+                    results = raw or []
+                    found = bool(results)
+                except Exception as ex:
+                    self._log(f"⚠ tables: {ex}")
+
+            elif pick_mode == 'ai_universal':
+                found = False  # handled below
+
+            # ── Фолбэк через AI ───────────────────────────────────────
+            if not found and fallback_ai and ai_prompt:
+                self._log("🤖 Фолбэк: AI-парсер...")
+                try:
+                    page_text = drv.execute_script(
+                        "return document.body ? document.body.innerText : '';"
+                    ) or drv.page_source or ''
+                except Exception:
+                    page_text = drv.page_source or ''
+                ai_full = (
+                    f"Страница:\n{page_text[:8000]}\n\n"
+                    f"Задача: {ai_prompt}\n\nВерни только результат без пояснений."
+                )
+                if self._model_manager:
+                    mid = getattr(self, '_default_model_id', None) or ''
+                    provider = self._model_manager.get_provider(mid) if mid else None
+                    if provider:
+                        ai_result = await provider.complete(ai_full)
+                        results = [ai_result.strip()]
+                        found = True
+                        self._log("🤖 AI-парсер: результат получен")
+
+            if pick_mode == 'ai_universal' and not found:
+                try:
+                    page_text = drv.execute_script(
+                        "return document.body ? document.body.innerText : '';"
+                    ) or ''
+                except Exception:
+                    page_text = drv.page_source or ''
+                ai_full = (
+                    f"Страница:\n{page_text[:8000]}\n\n"
+                    f"Задача: {ai_prompt or 'Извлеки основные данные'}\n\nВерни только результат."
+                )
+                if self._model_manager:
+                    mid = getattr(self, '_default_model_id', None) or ''
+                    provider = self._model_manager.get_provider(mid) if mid else None
+                    if provider:
+                        ai_result = await provider.complete(ai_full)
+                        results = [ai_result.strip()]
+                        found = True
+
+            out = results[0] if (parse_type == 'first' and results) else results
+            _save(out)
+            cnt = len(results) if isinstance(results, list) else 1
+            self._log(f"🕸️ Парсинг завершён: {str(out)[:120]}")
+            return f"🕸️ Текст получен ({cnt} элементов)"
+
+        except Exception as e:
+            self._log(f"❌ Browser Parse ошибка: {e}")
+            if on_error == 'stop':
+                raise
+            elif on_error == 'empty':
+                _save('')
+            return f"❌ Browser Parse: {e}"
+
+    async def _exec_program_inspector(self, node) -> str:
+        """🔬 Program Inspector — Win32 + UIAutomation + OCR фолбэк."""
+        import json as _json, asyncio, ctypes
+        from ctypes import wintypes
+        cfg = getattr(node, 'snippet_config', {}) or {}
+        program_source  = cfg.get('program_source', 'hwnd_var')
+        hwnd_var        = cfg.get('hwnd_var', 'program_hwnd').strip().strip('{}')
+        win_title       = cfg.get('window_title_filter', '').strip()
+        pid_var_name    = cfg.get('pid_var', 'program_pid').strip().strip('{}')
+        inspect_mode    = cfg.get('inspect_mode', 'full_dump')
+        class_filter    = cfg.get('class_filter', '').strip()
+        include_coords  = bool(cfg.get('include_coords', True))
+        include_state   = bool(cfg.get('include_state', True))
+        include_text    = bool(cfg.get('include_text', True))
+        depth_limit     = int(cfg.get('depth_limit', 5) or 5)
+        use_ai          = bool(cfg.get('use_ai_interpret', False))
+        ai_task         = cfg.get('ai_task', '').strip()
+        save_to         = cfg.get('save_to', 'table')
+        result_var      = cfg.get('result_var', 'program_dump').strip().strip('{}')
+        result_table    = cfg.get('result_table', 'program_elements').strip().strip('{}')
+        result_list     = cfg.get('result_list', '').strip().strip('{}')
+        on_error        = cfg.get('on_error', 'stop')
+
+        user32 = ctypes.windll.user32
+
+        # ══ 1. Найти HWND ════════════════════════════════════════════
+        hwnd = 0
+        if program_source == 'hwnd_var':
+            hwnd = int(self._context.get(hwnd_var, 0) or 0)
+            if not hwnd and self._project_variables:
+                pv_raw = self._project_variables.get(hwnd_var)
+                if isinstance(pv_raw, dict):
+                    hwnd = int(pv_raw.get('value', 0) or 0)
+                elif pv_raw:
+                    try: hwnd = int(pv_raw)
+                    except (ValueError, TypeError): pass
+            if not hwnd:
+                hwnd = int(self._context.get('_program_hwnd', 0) or 0)
+            if not hwnd and self._workflow:
+                _meta = getattr(self._workflow, 'metadata', {}) or {}
+                hwnd = int(_meta.get('_last_program_hwnd', 0) or 0)
+                if not hwnd:
+                    for _entry in _meta.get('_open_programs_meta', {}).values():
+                        hwnd = int(_entry.get('hwnd', 0) or 0)
+                        if hwnd:
+                            self._log(f"  🔍 HWND из _open_programs_meta: {hwnd}")
+                            break
+        elif program_source == 'window_title':
+            buf = ctypes.create_unicode_buffer(512)
+            def _find_cb(h, _):
+                nonlocal hwnd
+                if user32.IsWindowVisible(h):
+                    user32.GetWindowTextW(h, buf, 512)
+                    if win_title.lower() in buf.value.lower():
+                        hwnd = h
+                return True
+            WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+            user32.EnumWindows(WNDENUMPROC(_find_cb), 0)
+        elif program_source == 'pid_var':
+            pid = int(self._context.get(pid_var_name, 0) or 0)
+            def _pid_cb(h, _):
+                nonlocal hwnd
+                d = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(h, ctypes.byref(d))
+                if d.value == pid:
+                    hwnd = h
+                return True
+            WNDENUMPROC2 = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+            user32.EnumWindows(WNDENUMPROC2(_pid_cb), 0)
+        elif program_source == 'active_window':
+            hwnd = user32.GetForegroundWindow()
+
+        if not hwnd:
+            raise RuntimeError("Окно программы не найдено")
+
+        self._log(f"🔬 HWND: {hwnd}")
+
+        try:
+            elements = []
+
+            # ══ 2. Win32 API — классические элементы ══════════════════
+            def _read_win32(parent_hwnd, depth=0):
+                if depth > depth_limit:
+                    return
+                child = user32.GetWindow(parent_hwnd, 5)  # GW_CHILD
+                while child:
+                    cls_buf = ctypes.create_unicode_buffer(256)
+                    txt_buf = ctypes.create_unicode_buffer(1024)
+                    user32.GetClassNameW(child, cls_buf, 256)
+                    cls = cls_buf.value
+                    txt = ''
+                    if include_text:
+                        user32.GetWindowTextW(child, txt_buf, 1024)
+                        txt = txt_buf.value.strip()
+                    if class_filter and class_filter.lower() not in cls.lower():
+                        child = user32.GetWindow(child, 2)
+                        continue
+                    skip = False
+                    if inspect_mode == 'buttons_only' and 'button' not in cls.lower():
+                        skip = True
+                    elif inspect_mode == 'text_fields' and cls.lower() not in (
+                            'edit', 'richedit', 'richedit20a', 'richedit20w'):
+                        skip = True
+                    elif inspect_mode == 'labels_only' and cls.lower() != 'static':
+                        skip = True
+                    elif inspect_mode == 'checkboxes' and 'button' not in cls.lower():
+                        skip = True
+                    if not skip:
+                        # Пропускаем хром-элементы Electron (они не несут полезной информации)
+                        _skip_classes = {
+                            'chrome_renderwidgethosthwnd', 'intermediate d3d window',
+                            'chrome_widgetwin_1', 'chrome_widgetwin_0',
+                        }
+                        if cls.lower() not in _skip_classes or txt:
+                            elem = {'hwnd': child, 'class': cls, 'text': txt,
+                                    'depth': depth, 'source': 'win32'}
+                            if include_coords:
+                                r = wintypes.RECT()
+                                user32.GetWindowRect(child, ctypes.byref(r))
+                                elem.update({'x': r.left, 'y': r.top,
+                                             'w': r.right - r.left, 'h': r.bottom - r.top})
+                            if include_state:
+                                elem['visible'] = bool(user32.IsWindowVisible(child))
+                                elem['enabled'] = bool(user32.IsWindowEnabled(child))
+                                elem['checked'] = (
+                                    bool(user32.SendMessageW(child, 0x00F0, 0, 0))
+                                    if 'button' in cls.lower() else None
+                                )
+                            elements.append(elem)
+                    _read_win32(child, depth + 1)
+                    child = user32.GetWindow(child, 2)
+
+            _read_win32(hwnd)
+            self._log(f"🔬 Win32 элементов: {len(elements)}")
+
+            # ══ 3. UIAutomation — работает для Electron/WPF/UWP ═══════
+            uia_elements = []
+            # Сначала пробуем pip-пакет uiautomation (стабильнее, не требует COM-регистрации)
+            _uia_pkg_ok = False
+            try:
+                import uiautomation as _uia
+                ctrl = _uia.ControlFromHandle(hwnd)
+                if ctrl:
+                    def _walk_uia(c, depth=0):
+                        if depth > depth_limit:
+                            return
+                        for el in c.GetChildren():
+                            name = (el.Name or '').strip()
+                            entry = {
+                                'class': el.ControlTypeName,
+                                'text': name,
+                                'depth': depth,
+                                'source': 'uia_pkg',
+                                'enabled': el.IsEnabled,
+                            }
+                            if include_coords:
+                                try:
+                                    r = el.BoundingRectangle
+                                    entry.update({'x': r.left, 'y': r.top,
+                                                  'w': r.width(), 'h': r.height()})
+                                except Exception:
+                                    pass
+                            if entry['text'] or (include_coords and entry.get('w', 0) > 0):
+                                uia_elements.append(entry)
+                            _walk_uia(el, depth + 1)
+                    _walk_uia(ctrl)
+                    self._log(f"🔬 uiautomation пакет: {len(uia_elements)} элементов")
+                    _uia_pkg_ok = True
+            except ImportError:
+                pass  # Нет пакета — пробуем comtypes ниже
+            except Exception as uia_pkg_err:
+                self._log(f"⚠ uiautomation pkg ошибка: {uia_pkg_err}")
+
+            # Если pip-пакет не дал результата — пробуем comtypes (COM/WinRT)
+            if not _uia_pkg_ok:
+                try:
+                    import pythoncom
+                    pythoncom.CoInitializeEx(pythoncom.COINIT_MULTITHREADED)
+                except Exception:
+                    pass
+                try:
+                    import comtypes.client
+                    comtypes.client.GetModule('UIAutomationClient')
+                    from comtypes.gen.UIAutomationClient import (
+                        CUIAutomation, IUIAutomation, UIA_ControlTypePropertyId,
+                        UIA_NamePropertyId, UIA_BoundingRectanglePropertyId,
+                        UIA_IsEnabledPropertyId, TreeScope_Descendants,
+                    )
+                    uia = comtypes.client.CreateObject(CUIAutomation, interface=IUIAutomation)
+                    root_el = uia.ElementFromHandle(hwnd)
+                    condition = uia.CreateTrueCondition()
+                    children = root_el.FindAll(TreeScope_Descendants, condition)
+                    count = children.Length
+                    self._log(f"🔬 UIAutomation (comtypes): {count} элементов")
+                    for i in range(min(count, 500)):
+                        try:
+                            el = children.GetElement(i)
+                            name = el.GetCurrentPropertyValue(UIA_NamePropertyId) or ''
+                            ctrl_type = el.GetCurrentPropertyValue(UIA_ControlTypePropertyId)
+                            enabled  = el.GetCurrentPropertyValue(UIA_IsEnabledPropertyId)
+                            rect_val = el.GetCurrentPropertyValue(UIA_BoundingRectanglePropertyId)
+                            if not name and not rect_val:
+                                continue
+                            uia_elem = {
+                                'class': f'UIA_CtrlType_{ctrl_type}',
+                                'text': str(name),
+                                'depth': 0,
+                                'source': 'uia',
+                                'enabled': bool(enabled),
+                            }
+                            if include_coords and rect_val:
+                                try:
+                                    uia_elem.update({
+                                        'x': int(rect_val.left), 'y': int(rect_val.top),
+                                        'w': int(rect_val.right - rect_val.left),
+                                        'h': int(rect_val.bottom - rect_val.top),
+                                    })
+                                except Exception:
+                                    pass
+                            if uia_elem['text'] or (include_coords and uia_elem.get('w', 0) > 0):
+                                uia_elements.append(uia_elem)
+                        except Exception:
+                            continue
+                except ImportError:
+                    self._log("⚠ comtypes не установлен — UIAutomation недоступен")
+                except Exception as uia_err:
+                    self._log(f"⚠ UIAutomation (comtypes) ошибка: {uia_err}")
+
+            if uia_elements:
+                elements = uia_elements + [e for e in elements if e.get('text')]
+                self._log(f"🔬 Итого после UIAutomation: {len(elements)}")
+
+            # ══ 4. OCR фолбэк — если Win32/UIA дали мало текста ═══════
+            useful = [e for e in elements if e.get('text', '').strip()]
+            if len(useful) < 3:
+                self._log("🔬 Мало текста через Win32/UIA — запускаем OCR скриншота...")
+                ocr_elements = await self._ocr_window(hwnd, include_coords)
+                if ocr_elements:
+                    elements = ocr_elements + elements
+                    self._log(f"🔬 OCR добавил {len(ocr_elements)} текстовых блоков")
+
+            self._log(f"🔬 Итого элементов: {len(elements)}")
+
+            # ══ 5. AI-интерпретация ════════════════════════════════════
+            if use_ai and ai_task and elements:
+                dump_str = _json.dumps(elements[:200], ensure_ascii=False)
+                ai_full = (
+                    f"Элементы программы:\n{dump_str}\n\n"
+                    f"Задача: {ai_task}\n\nОтветь только результатом."
+                )
+                if self._model_manager:
+                    mid = getattr(self, '_default_model_id', None) or ''
+                    provider = self._model_manager.get_provider(mid) if mid else None
+                    if provider:
+                        ai_result = await provider.complete(ai_full)
+                        self._context['_ai_inspector_result'] = ai_result
+                        self._log(f"🤖 AI: {ai_result[:200]}")
+
+            # ══ 6. Сохранение ══════════════════════════════════════════
+            if save_to == 'variable' and result_var:
+                val = _json.dumps(elements, ensure_ascii=False)
+                self._context[result_var] = val
+                self._sync_var_to_project(result_var, val)
+            elif save_to == 'table' and result_table:
+                headers = ['class', 'text', 'source', 'depth']
+                if include_coords:
+                    headers += ['x', 'y', 'w', 'h']
+                if include_state:
+                    headers += ['enabled']
+                rows = [[str(e.get(h, '')) for h in headers] for e in elements]
+                tbl = [headers] + rows
+                if self._project_variables is not None:
+                    self._project_variables[result_table] = tbl
+                    self.signals.variable_updated.emit(result_table, str(...))
+            elif save_to == 'list' and result_list:
+                texts = [e.get('text', '').strip() for e in elements if e.get('text', '').strip()]
+                self._context[result_list] = texts
+                if self._project_variables is not None:
+                    self._project_variables[result_list] = texts
+                    self.signals.variable_updated.emit(result_list, str(...))
+
+            return f"🔬 Инспекция завершена: {len(elements)} элементов"
+
+        except Exception as e:
+            self._log(f"❌ Program Inspector: {e}")
+            if on_error == 'stop':
+                raise
+            return f"❌ Program Inspector: {e}"
+            
+    async def _ocr_window(self, hwnd: int, include_coords: bool = True) -> list:
+        """Скриншот HWND + OCR → список элементов с текстом и координатами."""
+        import ctypes
+        from ctypes import wintypes
+        elements = []
+
+        # ── 1. Скриншот через PrintWindow (работает для окон за экраном и Electron) ──
+        try:
+            import win32gui, win32ui, win32con
+            import ctypes as _ct
+            left, top, right, bot = win32gui.GetWindowRect(hwnd)
+            w = right - left
+            h = bot - top
+            if w <= 0 or h <= 0:
+                w, h = 800, 600
+            hwnd_dc  = win32gui.GetWindowDC(hwnd)
+            mfc_dc   = win32ui.CreateDCFromHandle(hwnd_dc)
+            save_dc  = mfc_dc.CreateCompatibleDC()
+            bmp      = win32ui.CreateBitmap()
+            bmp.CreateCompatibleBitmap(mfc_dc, w, h)
+            save_dc.SelectObject(bmp)
+            # PW_RENDERFULLCONTENT=2 — захватывает Electron/WPF/скрытые/заэкранные окна
+            printed = _ct.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)
+            if not printed:
+                # Fallback: BitBlt (работает только для видимых окон)
+                save_dc.BitBlt((0, 0), (w, h), mfc_dc, (0, 0), win32con.SRCCOPY)
+            bmp_info = bmp.GetInfo()
+            bmp_data = bmp.GetBitmapBits(True)
+            save_dc.DeleteDC()
+            mfc_dc.DeleteDC()
+            win32gui.ReleaseDC(hwnd, hwnd_dc)
+            win32gui.DeleteObject(bmp.GetHandle())
+            # Конвертируем в PIL Image
+            from PIL import Image
+            img = Image.frombuffer('RGB', (bmp_info['bmWidth'], bmp_info['bmHeight']),
+                                   bmp_data, 'raw', 'BGRX', 0, 1)
+        except Exception as e:
+            self._log(f"⚠ OCR screenshot (BitBlt) не удался: {e}. Пробуем pyautogui...")
+            try:
+                import pyautogui
+                from ctypes import wintypes
+                user32 = ctypes.windll.user32
+                r = wintypes.RECT()
+                user32.GetWindowRect(hwnd, ctypes.byref(r))
+                region = (r.left, r.top, r.right - r.left, r.bottom - r.top)
+                if region[2] <= 0 or region[3] <= 0:
+                    region = (100, 100, 800, 600)
+                img = pyautogui.screenshot(region=region)
+            except Exception as e2:
+                self._log(f"⚠ OCR screenshot (pyautogui): {e2}")
+                return []
+
+        # ── 2. OCR: pytesseract (первый приоритет) ─────────────────
+        try:
+            import pytesseract
+            from PIL import Image as _PILImg
+            ocr_data = pytesseract.image_to_data(
+                img, output_type=pytesseract.Output.DICT,
+                lang='rus+eng', config='--psm 11'
+            )
+            n = len(ocr_data['text'])
+            for i in range(n):
+                txt = (ocr_data['text'][i] or '').strip()
+                conf = int(ocr_data['conf'][i] or 0)
+                if not txt or conf < 30:
+                    continue
+                elem = {'class': 'OCR_text', 'text': txt, 'source': 'ocr',
+                        'depth': 0, 'enabled': True, 'ocr_conf': conf}
+                if include_coords:
+                    elem.update({
+                        'x': ocr_data['left'][i],
+                        'y': ocr_data['top'][i],
+                        'w': ocr_data['width'][i],
+                        'h': ocr_data['height'][i],
+                    })
+                elements.append(elem)
+            self._log(f"🔬 pytesseract OCR: {len(elements)} слов")
+            return elements
+        except ImportError:
+            self._log("⚠ pytesseract не установлен. pip install pytesseract")
+        except Exception as te:
+            self._log(f"⚠ pytesseract: {te}")
+
+        # ── 3. easyocr фолбэк ──────────────────────────────────────
+        try:
+            import easyocr
+            import numpy as np
+            reader = easyocr.Reader(['ru', 'en'], gpu=False, verbose=False)
+            arr = np.array(img)
+            results = reader.readtext(arr, detail=1)
+            for (bbox, txt, conf) in results:
+                txt = (txt or '').strip()
+                if not txt or conf < 0.3:
+                    continue
+                xs = [p[0] for p in bbox]; ys = [p[1] for p in bbox]
+                elem = {'class': 'OCR_text', 'text': txt, 'source': 'ocr_easy',
+                        'depth': 0, 'enabled': True, 'ocr_conf': round(conf, 2)}
+                if include_coords:
+                    elem.update({
+                        'x': int(min(xs)), 'y': int(min(ys)),
+                        'w': int(max(xs) - min(xs)), 'h': int(max(ys) - min(ys)),
+                    })
+                elements.append(elem)
+            self._log(f"🔬 easyocr: {len(elements)} блоков")
+            return elements
+        except ImportError:
+            self._log("⚠ easyocr не установлен. pip install easyocr")
+        except Exception as ee:
+            self._log(f"⚠ easyocr: {ee}")
+
+        # ── 4. Windows 10+ встроенный OCR (без зависимостей) ───────
+        try:
+            import asyncio as _aio
+            import winrt.windows.media.ocr as _wocr
+            import winrt.windows.graphics.imaging as _wgi
+            import winrt.windows.storage.streams as _wss
+            import io, base64
+
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            buf.seek(0)
+            png_bytes = buf.read()
+
+            async def _run_win_ocr():
+                engine = _wocr.OcrEngine.try_create_from_user_profile_languages()
+                if engine is None:
+                    return []
+                data = _wss.InMemoryRandomAccessStream()
+                writer = _wss.DataWriter(data)
+                writer.write_bytes(list(png_bytes))
+                await writer.store_async()
+                await writer.flush_async()
+                data.seek(0)
+                decoder = await _wgi.BitmapDecoder.create_async(data)
+                soft_bmp = await decoder.get_soft_bitmap_async()
+                result = await engine.recognize_async(soft_bmp)
+                out = []
+                for line in result.lines:
+                    txt = line.text.strip()
+                    if txt:
+                        out.append({'class': 'OCR_winrt', 'text': txt,
+                                    'source': 'ocr_winrt', 'depth': 0, 'enabled': True})
+                return out
+
+            loop = asyncio.get_event_loop()
+            ocr_res = loop.run_until_complete(_run_win_ocr())
+            if ocr_res:
+                self._log(f"🔬 Windows OCR: {len(ocr_res)} строк")
+                return ocr_res
+        except Exception as we:
+            self._log(f"⚠ Windows OCR: {we}")
+
+        self._log("⚠ OCR: ни один движок не сработал. Установите pytesseract или easyocr.")
+        return []
+        
     async def _exec_project_start(self, node: AgentNode) -> str:
         """▶ PROJECT_START: точка входа — выполняет стартовую логику по настройкам."""
         cfg = getattr(node, 'snippet_config', {}) or {}
@@ -6054,8 +7137,9 @@ except ImportError:
         return f"▶ {summary}"
     
     async def _exec_program_open(self, node: AgentNode) -> str:
-        """🖥 Открыть программу, найти окно, управлять."""
-        import subprocess, time
+        """🖥 Открыть программу, найти окно, управлять. Поддерживает множественные экземпляры."""
+        import subprocess, time, ctypes
+        from ctypes import wintypes
         cfg = getattr(node, 'snippet_config', {}) or {}
         exe = cfg.get('executable', '')
         args = cfg.get('arguments', '')
@@ -6074,22 +7158,150 @@ except ImportError:
         if not exe:
             return "❌ Не указан путь к программе"
         self._log(f"🖥 Запуск: {exe} {args}")
+
+        # ── Собираем ВСЕ уже известные HWND: из контекста + из metadata ──────────
+        # Это ключевой момент: context пуст при новом запуске, но metadata персистентна
+        def _collect_known_hwnds() -> set:
+            known = set()
+            # Из текущего контекста (текущий запуск)
+            for e in self._context.get('_open_programs', {}).values():
+                h = int(e.get('hwnd', 0) or 0)
+                if h:
+                    known.add(h)
+            # Из metadata (предыдущие запуски — ключевое для multi-instance!)
+            _meta = getattr(self._workflow, 'metadata', None) or {}
+            if isinstance(_meta, dict):
+                for e in _meta.get('_open_programs_meta', {}).values():
+                    h = int(e.get('hwnd', 0) or 0)
+                    if h:
+                        known.add(h)
+            return known
+
+        # ── Считаем сколько занято слотов offscreen (для правильного OFFSCREEN_X) ─
+        def _count_offscreen_slots() -> int:
+            """Количество программ уже перемещённых за экран (у кого offscreen_x > 10000)."""
+            count = 0
+            for e in self._context.get('_open_programs', {}).values():
+                if int(e.get('offscreen_x', 0) or 0) > 10000:
+                    count += 1
+            _meta = getattr(self._workflow, 'metadata', None) or {}
+            if isinstance(_meta, dict):
+                for e in _meta.get('_open_programs_meta', {}).values():
+                    ox = int(e.get('offscreen_x', 0) or 0)
+                    if ox > 10000:
+                        count += 1
+            return count
+
+        # ── Определяем индекс экземпляра (для уникального hwnd_var) ─────────────
+        def _is_pid_alive(check_pid: int) -> bool:
+            """Проверить жив ли процесс через WinAPI (без psutil)."""
+            try:
+                h = ctypes.windll.kernel32.OpenProcess(0x100000, False, check_pid)
+                if not h:
+                    return False
+                ret = ctypes.windll.kernel32.WaitForSingleObject(h, 0)
+                ctypes.windll.kernel32.CloseHandle(h)
+                return ret == 0x102  # WAIT_TIMEOUT = процесс жив
+            except Exception:
+                return True  # при ошибке считаем живым
+
+        def _find_existing_same_exe() -> tuple:
+            """Вернуть (pid, instance_index) живого экземпляра того же EXE, или (None, None)."""
+            for pid_str, e in list(self._context.get('_open_programs', {}).items()):
+                if e.get('exe', '').lower() == exe.lower():
+                    try:
+                        _p = int(pid_str)
+                        if _is_pid_alive(_p):
+                            return _p, e.get('instance_index', 1)
+                    except (ValueError, TypeError):
+                        pass
+            _meta_ex = getattr(self._workflow, 'metadata', None) or {}
+            if isinstance(_meta_ex, dict):
+                for pid_str, e in list(_meta_ex.get('_open_programs_meta', {}).items()):
+                    if e.get('exe', '').lower() == exe.lower():
+                        try:
+                            _p = int(pid_str)
+                            if _is_pid_alive(_p):
+                                return _p, e.get('instance_index', 1)
+                        except (ValueError, TypeError):
+                            pass
+            return None, None
+
+        def _find_next_free_slot() -> int:
+            """Найти первый свободный instance_index (не занятый ни одной живой программой)."""
+            used = set()
+            for pid_str, e in self._context.get('_open_programs', {}).items():
+                try:
+                    if _is_pid_alive(int(pid_str)):
+                        used.add(e.get('instance_index', 1))
+                except (ValueError, TypeError):
+                    pass
+            _meta_fs = getattr(self._workflow, 'metadata', None) or {}
+            if isinstance(_meta_fs, dict):
+                for pid_str, e in _meta_fs.get('_open_programs_meta', {}).items():
+                    try:
+                        if _is_pid_alive(int(pid_str)):
+                            used.add(e.get('instance_index', 1))
+                    except (ValueError, TypeError):
+                        pass
+            idx = 1
+            while idx in used:
+                idx += 1
+            return idx
+
+        single_instance = cfg.get('single_instance', False)
+
         try:
+            # ── Определяем слот: single_instance = перезапуск в том же; иначе — новый ──
+            if single_instance:
+                existing_pid, reuse_instance_index = _find_existing_same_exe()
+                if existing_pid is not None:
+                    self._log(f"  ♻️ Single Instance: EXE уже открыт (PID:{existing_pid}, слот {reuse_instance_index - 1}), перезапуск...")
+                    try:
+                        subprocess.call(['taskkill', '/F', '/PID', str(existing_pid)],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+                    self._context.get('_open_programs', {}).pop(str(existing_pid), None)
+                    _meta_kill = getattr(self._workflow, 'metadata', None) or {}
+                    if isinstance(_meta_kill, dict):
+                        _meta_kill.get('_open_programs_meta', {}).pop(str(existing_pid), None)
+                    time.sleep(0.5)
+                    instance_index = reuse_instance_index
+                else:
+                    instance_index = _find_next_free_slot()
+            else:
+                # Single Instance выключен — всегда новый слот, не трогаем существующие
+                instance_index = _find_next_free_slot()
+
             cmd = [exe] + (args.split() if args else [])
             wd = cfg.get('working_dir', '') or None
             proc = subprocess.Popen(cmd, cwd=wd if wd else None)
             pid = proc.pid
             self._context[inst_var] = pid
             self._context['_program_pid'] = pid
-            self._log(f"  PID: {pid}")
-            
-            # Регистрируем в реестре открытых программ (аналог browser_instance_id)
+            self._log(f"  PID: {pid}, слот: {instance_index - 1}")
+            if instance_index > 1:
+                hwnd_var_actual = f'{hwnd_var}_{instance_index}'
+                inst_var_actual = f'{inst_var}_{instance_index}'
+            else:
+                hwnd_var_actual = hwnd_var
+                inst_var_actual = inst_var
+            if instance_index > 1:
+                self._log(f"  📋 Экземпляр #{instance_index} → переменные: {hwnd_var_actual}, {inst_var_actual}")
+
+            # Регистрируем в реестре
             prog_entry = {
                 'pid': pid,
-                'hwnd': 0,  # обновим после нахождения HWND
+                'hwnd': 0,
                 'name': program_name,
                 'exe': exe,
                 'hidden': hide,
+                'instance_index': instance_index,
+                'offscreen_x': 0,
+                'offscreen_y': 0,
+                'win_w': 0,
+                'win_h': 0,
             }
             if '_open_programs' not in self._context:
                 self._context['_open_programs'] = {}
@@ -6098,132 +7310,257 @@ except ImportError:
             if wait_sec > 0:
                 time.sleep(wait_sec)
 
-            # Если hide_to_tray — сначала перемещаем процесс за экран ДО поиска HWND
-            # чтобы окно никогда не мелькало на рабочем столе
+            user32 = ctypes.windll.user32
+            WNDENUMPROC_T = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, ctypes.c_void_p)
+
+            # ── Вспомогательная функция поиска окон по PID ──────────────────────
+            def _find_hwnds_by_pid(target_pid: int, include_invisible: bool = False) -> list:
+                found = []
+                def _cb(h, _):
+                    visible = bool(user32.IsWindowVisible(h))
+                    if visible or include_invisible:
+                        _p = wintypes.DWORD()
+                        user32.GetWindowThreadProcessId(h, ctypes.byref(_p))
+                        if _p.value == target_pid:
+                            found.append(h)
+                    return True
+                user32.EnumWindows(WNDENUMPROC_T(_cb), 0)
+                return found
+
+            # ── Прячем окна за экран как только они появляются (поллинг) ─────────
             if hide:
                 try:
-                    import ctypes
-                    # Находим HWND по PID быстро (без ожидания)
-                    _found_hwnds = []
-                    def _quick_enum(h, _):
-                        if ctypes.windll.user32.IsWindowVisible(h):
-                            from ctypes import wintypes
-                            _p = wintypes.DWORD()
-                            ctypes.windll.user32.GetWindowThreadProcessId(h, ctypes.byref(_p))
-                            if _p.value == pid:
-                                _found_hwnds.append(h)
-                        return True
-                    import ctypes.wintypes as _wt
-                    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, _wt.HWND, ctypes.c_void_p)
-                    ctypes.windll.user32.EnumWindows(WNDENUMPROC(_quick_enum), 0)
-                    if _found_hwnds:
-                        _h = _found_hwnds[0]
-                        ctypes.windll.user32.ShowWindow(_h, 5)
-                        time.sleep(0.05)
-                        from ctypes import wintypes as _wt2
-                        _r = _wt2.RECT()
-                        ctypes.windll.user32.GetWindowRect(_h, ctypes.byref(_r))
-                        _ww = _r.right - _r.left
-                        _wh = _r.bottom - _r.top
-                        _prog_count = len(self._context.get('_open_programs', {}))
-                        _ox = 20000 + (_prog_count - 1) * (_ww + 50)
-                        ctypes.windll.user32.MoveWindow(_h, _ox, 20000, _ww, _wh, True)
-                        self._log(f"  📦 Окно скрыто за экран ({_ox},20000) ещё до HWND-поиска")
+                    _known_pre = _collect_known_hwnds()
+                    _hidden_pre = set()
+                    _slot = instance_index - 1
+                    # Опрашиваем до wait_sec секунд (окно может появиться в любой момент)
+                    _pre_deadline = time.time() + wait_sec
+                    while time.time() < _pre_deadline:
+                        _pre_found = _find_hwnds_by_pid(pid)
+                        _fresh_pre = [h for h in _pre_found if h not in _known_pre and h not in _hidden_pre]
+                        for _h in _fresh_pre:
+                            user32.ShowWindow(_h, 5)
+                            time.sleep(0.05)
+                            _r = wintypes.RECT()
+                            user32.GetWindowRect(_h, ctypes.byref(_r))
+                            _ww = max(_r.right - _r.left, 800)
+                            _wh = max(_r.bottom - _r.top, 600)
+                            _ox = 20000 + _slot * (_ww + 50)
+                            user32.MoveWindow(_h, _ox, 20000, _ww, _wh, True)
+                            _hidden_pre.add(_h)
+                            self._log(f"  📦 Окно скрыто за экран ({_ox},20000) [слот {_slot}]")
+                        time.sleep(0.1)
                 except Exception:
                     pass
 
-            # Поиск HWND (Windows)
+            # ── Поиск HWND с retry-циклом ────────────────────────────────────────
             hwnd = 0
             try:
-                import ctypes
-                from ctypes import wintypes
-                user32 = ctypes.windll.user32
+                _known_hwnds = _collect_known_hwnds()
+                # Retry: до 10 попыток × 0.5с = ещё 5 секунд поверх wait_sec
+                for _attempt in range(10):
+                    _candidates = _find_hwnds_by_pid(pid, include_invisible=False)
+                    if not _candidates:
+                        # Fallback: ищем также невидимые
+                        _candidates = _find_hwnds_by_pid(pid, include_invisible=True)
+                    if _candidates:
+                        # Исключаем все уже известные HWND (context + metadata)
+                        _fresh = [h for h in _candidates if h not in _known_hwnds]
+                        hwnd = _fresh[0] if _fresh else _candidates[0]
+                        break
+                    if _attempt < 9:
+                        time.sleep(0.5)
+                        self._log(f"  🔄 HWND не найден, попытка {_attempt + 2}/10...")
 
-                def _enum_cb(h, results):
-                    if user32.IsWindowVisible(h):
-                        _pid = wintypes.DWORD()
-                        user32.GetWindowThreadProcessId(h, ctypes.byref(_pid))
-                        if _pid.value == pid:
-                            results.append(h)
-                    return True
-
-                WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, ctypes.POINTER(ctypes.py_object))
-                results = []
-                cb = WNDENUMPROC(lambda h, _: _enum_cb(h, results) or True)
-                user32.EnumWindows(cb, 0)
-                if results:
-                    hwnd = results[0]
+                if not hwnd:
+                    self._log("  ⚠ HWND не найден после 10 попыток")
+            except Exception as _ex:
+                self._log(f"  ⚠ Ошибка поиска HWND: {_ex}")
+            
+            # ── Фаза стабилизации: ждём пока заставки/загрузчики не исчезнут ──────
+            # Нужна для программ с экраном загрузки (ZennoPoster, AIDA64 и т.п.)
+            # wait_splash задаётся в настройках сниппета (по умолчанию 0 = отключено)
+            wait_splash = int(cfg.get('wait_splash', 0))
+            if wait_splash > 0 and hwnd:
+                self._log(f"  ⏳ Стабилизация окна ({wait_splash}с)...")
+                _stable_start = time.time()
+                _tracked = hwnd
+                while time.time() - _stable_start < wait_splash:
+                    time.sleep(0.4)
+                    _win_alive = bool(user32.IsWindow(_tracked))
+                    _wins_now = _find_hwnds_by_pid(pid, include_invisible=False)
+                    if not _win_alive:
+                        # Заставка закрылась — ищем новое главное окно
+                        _new_wins = [h for h in _wins_now if h not in _known_hwnds]
+                        if not _new_wins:
+                            # Процесс сплеша умер и породил НОВЫЙ процесс (напр. ZennoPoster)
+                            # Ищем по имени exe среди всех процессов системы
+                            try:
+                                import psutil as _psu
+                                _exe_name = os.path.basename(exe).lower()
+                                for _proc in _psu.process_iter(['pid', 'name', 'exe']):
+                                    try:
+                                        _pexe = (_proc.info.get('exe') or '').lower()
+                                        _pname = (_proc.info.get('name') or '').lower()
+                                        if _exe_name in _pexe or _exe_name in _pname:
+                                            _child_pid = _proc.info['pid']
+                                            if _child_pid != pid:
+                                                _child_wins = _find_hwnds_by_pid(_child_pid)
+                                                _fresh_child = [h for h in _child_wins if h not in _known_hwnds]
+                                                if _fresh_child:
+                                                    _new_wins = _fresh_child
+                                                    pid = _child_pid  # обновляем PID на новый процесс
+                                                    self._context[inst_var] = pid
+                                                    self._context['_open_programs'][str(pid)] = \
+                                                        self._context['_open_programs'].pop(str(proc.pid), prog_entry)
+                                                    self._log(f"  🔄 Новый процесс после сплеша: PID={pid}")
+                                                    break
+                                    except Exception:
+                                        pass
+                            except ImportError:
+                                pass
+                        if _new_wins:
+                            _tracked = _new_wins[0]
+                            _known_hwnds.add(hwnd)  # старый HWND больше не "новый"
+                            self._log(f"  🔄 Заставка → главное окно: {_tracked}")
+                            # Сразу прячем если нужно
+                            if hide:
+                                try:
+                                    _slot = instance_index - 1
+                                    user32.ShowWindow(_tracked, 5)
+                                    _r2 = wintypes.RECT()
+                                    user32.GetWindowRect(_tracked, ctypes.byref(_r2))
+                                    _ww2 = max(_r2.right - _r2.left, 800)
+                                    _wh2 = max(_r2.bottom - _r2.top, 600)
+                                    _ox2 = 20000 + _slot * (_ww2 + 50)
+                                    user32.MoveWindow(_tracked, _ox2, 20000, _ww2, _wh2, True)
+                                except Exception:
+                                    pass
+                            break
+                    else:
+                        # Окно живо — смотрим нет ли нового окна (главное появилось рядом с заставкой)
+                        _new_extra = [h for h in _wins_now if h not in _known_hwnds and h != _tracked]
+                        if _new_extra:
+                            _tracked = _new_extra[0]
+                            self._log(f"  🔄 Главное окно появилось: {_tracked}")
+                            if hide:
+                                try:
+                                    _slot = instance_index - 1
+                                    user32.ShowWindow(_tracked, 5)
+                                    _r2 = wintypes.RECT()
+                                    user32.GetWindowRect(_tracked, ctypes.byref(_r2))
+                                    _ww2 = max(_r2.right - _r2.left, 800)
+                                    _wh2 = max(_r2.bottom - _r2.top, 600)
+                                    _ox2 = 20000 + _slot * (_ww2 + 50)
+                                    user32.MoveWindow(_tracked, _ox2, 20000, _ww2, _wh2, True)
+                                except Exception:
+                                    pass
+                            # Ждём пока заставка не закроется
+                            for _ in range(10):
+                                time.sleep(0.3)
+                                if not user32.IsWindow(hwnd):
+                                    break
+                            break
+                hwnd = _tracked
+            
+            # ── Сохраняем HWND в контекст и переменные ──────────────────────────
+            if hwnd:
+                self._context['_open_programs'][str(pid)]['hwnd'] = hwnd
+                # Основной hwnd_var (с индексом если >1 экземпляр)
+                self._context[hwnd_var_actual] = hwnd
+                self._context[f'_program_hwnd_{instance_index}'] = hwnd  # всегда — адресация по индексу
+                if instance_index == 1:
+                    # Базовые переменные пишем ТОЛЬКО для первого экземпляра
                     self._context[hwnd_var] = hwnd
                     self._context['_program_hwnd'] = hwnd
-                    self._log(f"  HWND: {hwnd}")
-                    # Сохраняем HWND в workflow.metadata — персистентно между запусками
-                    if self._workflow and isinstance(getattr(self._workflow, 'metadata', None), dict):
-                        if '_open_programs_meta' not in self._workflow.metadata:
-                            self._workflow.metadata['_open_programs_meta'] = {}
-                        self._workflow.metadata['_open_programs_meta'][str(pid)] = {
-                            'hwnd': hwnd, 'name': program_name
-                        }
-                        self._workflow.metadata['_last_program_hwnd'] = hwnd
-                        self._workflow.metadata['_last_program_pid'] = pid
-                    # Сохраняем HWND в project_variables для доступа между запусками
-                    if hwnd_var and self._project_variables is not None:
-                        if isinstance(self._project_variables, dict):
-                            if hwnd_var in self._project_variables:
-                                if isinstance(self._project_variables[hwnd_var], dict):
-                                    self._project_variables[hwnd_var]['value'] = str(hwnd)
-                                else:
-                                    self._project_variables[hwnd_var] = str(hwnd)
+                self._context[inst_var_actual] = pid
+                # Именованная переменная по имени программы
+                if program_name:
+                    _safe = program_name.replace(' ', '_').lower()
+                    _named = f'program_hwnd_{_safe}'
+                    _named_idx = f'program_hwnd_{_safe}_{instance_index}'
+                    self._context[_named] = hwnd
+                    self._context[_named_idx] = hwnd
+                    if isinstance(self._project_variables, dict):
+                        self._project_variables[_named] = str(hwnd)
+                        self._project_variables[_named_idx] = str(hwnd)
+                        self.signals.variable_updated.emit(_named, str(hwnd))
+                        self.signals.variable_updated.emit(_named_idx, str(hwnd))
+                self._log(f"  HWND: {hwnd} → {hwnd_var_actual}")
+                # Сохраняем в workflow.metadata
+                if self._workflow and isinstance(getattr(self._workflow, 'metadata', None), dict):
+                    if '_open_programs_meta' not in self._workflow.metadata:
+                        self._workflow.metadata['_open_programs_meta'] = {}
+                    self._workflow.metadata['_open_programs_meta'][str(pid)] = {
+                        'hwnd': hwnd,
+                        'name': program_name,
+                        'exe': exe,
+                        'instance_index': instance_index,
+                        'hwnd_var': hwnd_var_actual,
+                        'offscreen_x': 0,
+                        'offscreen_y': 0,
+                    }
+                    self._workflow.metadata['_last_program_hwnd'] = hwnd
+                    self._workflow.metadata['_last_program_pid'] = pid
+                # Сохраняем в project_variables
+                if self._project_variables is not None and isinstance(self._project_variables, dict):
+                    for _vn in [hwnd_var_actual, hwnd_var]:
+                        if _vn in self._project_variables:
+                            if isinstance(self._project_variables[_vn], dict):
+                                self._project_variables[_vn]['value'] = str(hwnd)
                             else:
-                                self._project_variables[hwnd_var] = str(hwnd)
-                        self.signals.variable_updated.emit(hwnd_var, str(hwnd))
-            except Exception:
-                pass
+                                self._project_variables[_vn] = str(hwnd)
+                        else:
+                            self._project_variables[_vn] = str(hwnd)
+                        self.signals.variable_updated.emit(_vn, str(hwnd))
 
-            if hwnd:
-                # Обновляем HWND в реестре
-                if '_open_programs' in self._context and str(pid) in self._context['_open_programs']:
-                    self._context['_open_programs'][str(pid)]['hwnd'] = hwnd
-
-            if resize and 'x' in resize:
+            # ── Resize если задан ───────────────────────────────────────────────
+            if resize and 'x' in resize and hwnd:
                 try:
                     w, h = resize.split('x')
-                    import ctypes
-                    ctypes.windll.user32.MoveWindow(hwnd, 0, 0, int(w), int(h), True)
+                    user32.MoveWindow(hwnd, 0, 0, int(w), int(h), True)
                 except Exception:
                     pass
 
+            # ── Перемещаем за экран (финальная позиция по точному размеру) ──────
             if hide and hwnd:
                 try:
-                    import ctypes
-                    user32 = ctypes.windll.user32
-                    # Сначала показываем окно нормально (убираем свёрнутость)
-                    user32.ShowWindow(hwnd, 5)  # SW_SHOW
-                    import time; time.sleep(0.1)
-                    # Определяем размер окна для корректного смещения
-                    from ctypes import wintypes
+                    user32.ShowWindow(hwnd, 5)
+                    time.sleep(0.1)
                     r = wintypes.RECT()
                     user32.GetWindowRect(hwnd, ctypes.byref(r))
-                    win_w = r.right - r.left
-                    win_h = r.bottom - r.top
-                    # Определяем порядковый номер чтобы программы не перекрывались
-                    prog_count = len(self._context.get('_open_programs', {}))
-                    OFFSCREEN_X = 20000 + (prog_count - 1) * (win_w + 50)
+                    win_w = max(r.right - r.left, 1)
+                    win_h = max(r.bottom - r.top, 1)
+                    # Слот = количество уже спрятанных программ (без текущей)
+                    _slot = instance_index - 1   # тот же детерминированный слот — без гонки
+                    OFFSCREEN_X = 20000 + _slot * (win_w + 50)
                     OFFSCREEN_Y = 20000
                     user32.MoveWindow(hwnd, OFFSCREEN_X, OFFSCREEN_Y, win_w, win_h, True)
-                    self._log(f"  📦 Программа перемещена за экран ({OFFSCREEN_X},{OFFSCREEN_Y})")
-                    # Обновляем координаты в реестре
-                    if '_open_programs' in self._context and str(pid) in self._context['_open_programs']:
-                        self._context['_open_programs'][str(pid)]['offscreen_x'] = OFFSCREEN_X
-                        self._context['_open_programs'][str(pid)]['offscreen_y'] = OFFSCREEN_Y
-                        self._context['_open_programs'][str(pid)]['win_w'] = win_w
-                        self._context['_open_programs'][str(pid)]['win_h'] = win_h
+                    self._log(f"  📦 Программа перемещена за экран ({OFFSCREEN_X},{OFFSCREEN_Y}) [слот {_slot}]")
+                    # Обновляем координаты в обоих реестрах
+                    self._context['_open_programs'][str(pid)].update({
+                        'offscreen_x': OFFSCREEN_X,
+                        'offscreen_y': OFFSCREEN_Y,
+                        'win_w': win_w,
+                        'win_h': win_h,
+                    })
+                    if self._workflow and isinstance(getattr(self._workflow, 'metadata', None), dict):
+                        _pm = self._workflow.metadata.get('_open_programs_meta', {})
+                        if str(pid) in _pm:
+                            _pm[str(pid)].update({
+                                'offscreen_x': OFFSCREEN_X,
+                                'offscreen_y': OFFSCREEN_Y,
+                                'win_w': win_w,
+                                'win_h': win_h,
+                            })
                 except Exception as ex:
                     self._log(f"  ⚠ Не удалось переместить за экран: {ex}")
 
-            return f"✅ Программа запущена (PID:{pid}, HWND:{hwnd})"
+            return (f"✅ Программа запущена (PID:{pid}, HWND:{hwnd}, "
+                    f"экземпляр #{instance_index}, переменная: {hwnd_var_actual})")
         except Exception as e:
             return f"❌ Ошибка: {e}"
-
+            
     async def _exec_program_action(self, node: AgentNode) -> str:
         """🎯 Действие в окне программы."""
         cfg = getattr(node, 'snippet_config', {}) or {}
@@ -6234,39 +7571,55 @@ except ImportError:
         wait_ms = int(cfg.get('wait_after', 200))
         
         # Определяем HWND: сначала по instance_var из cfg, потом глобальный
-        inst_var = cfg.get('instance_var', '').strip('{}').strip()
+        hwnd_var = cfg.get('hwnd_var', '').strip('{}').strip()
         hwnd = 0
-        if inst_var:
-            inst_val = self._context.get(inst_var)
-            if inst_val:
-                # inst_val может быть PID — ищем HWND в реестре
-                open_progs = self._context.get('_open_programs', {})
-                pid_str = str(inst_val)
-                if pid_str in open_progs:
-                    hwnd = open_progs[pid_str].get('hwnd', 0)
-                else:
-                    # inst_val сам может быть HWND
-                    try:
-                        hwnd = int(inst_val)
-                    except (ValueError, TypeError):
-                        pass
+        # 1. hwnd_var — прямое имя HWND-переменной (приоритет, как в Program Inspector)
+        if hwnd_var:
+            hwnd = int(self._context.get(hwnd_var, 0) or 0)
+            if not hwnd and self._project_variables:
+                pv = self._project_variables.get(hwnd_var)
+                hwnd = int((pv.get('value', 0) if isinstance(pv, dict) else pv) or 0)
+            if hwnd:
+                self._log(f"  🔍 HWND из hwnd_var '{hwnd_var}': {hwnd}")
+        # 2. instance_var (PID → _open_programs → hwnd)
+        if not hwnd:
+            inst_var = cfg.get('instance_var', '').strip('{}').strip()
+            if inst_var:
+                inst_val = self._context.get(inst_var)
+                if inst_val:
+                    open_progs = self._context.get('_open_programs', {})
+                    pid_str = str(inst_val)
+                    if pid_str in open_progs:
+                        hwnd = open_progs[pid_str].get('hwnd', 0)
+                    else:
+                        try:
+                            hwnd = int(inst_val)
+                        except (ValueError, TypeError):
+                            pass
+        # 3. Глобальный _program_hwnd (только если экземпляр один)
         if not hwnd:
             hwnd = self._context.get('_program_hwnd', 0)
+        # 4. Первый из _open_programs
         if not hwnd:
-            # Берём первый из открытых программ
-            open_progs = self._context.get('_open_programs', {})
-            for entry in open_progs.values():
+            for entry in self._context.get('_open_programs', {}).values():
                 hwnd = entry.get('hwnd', 0)
                 if hwnd:
                     break
-
-        # 4. Читаем из workflow.metadata — персистентно между отдельными запусками
+        # 5. metadata — сначала по hwnd_var, потом last
         if not hwnd and self._workflow:
             _meta = getattr(self._workflow, 'metadata', {}) or {}
-            hwnd = _meta.get('_last_program_hwnd', 0)
+            if hwnd_var:
+                for _entry in _meta.get('_open_programs_meta', {}).values():
+                    if _entry.get('hwnd_var') == hwnd_var:
+                        hwnd = int(_entry.get('hwnd', 0) or 0)
+                        if hwnd:
+                            self._log(f"  🔍 HWND из metadata по hwnd_var '{hwnd_var}': {hwnd}")
+                            break
+            if not hwnd:
+                hwnd = int(_meta.get('_last_program_hwnd', 0) or 0)
             if not hwnd:
                 for _entry in _meta.get('_open_programs_meta', {}).values():
-                    hwnd = _entry.get('hwnd', 0)
+                    hwnd = int(_entry.get('hwnd', 0) or 0)
                     if hwnd:
                         break
             if hwnd:
@@ -6365,11 +7718,21 @@ except ImportError:
         hwnd = 0
         inst_var = cfg.get('instance_var', '').strip('{}').strip()
         # Fallback: если поле не заполнено — берём стандартный ключ program_pid
+        hwnd = 0
+        # 1. hwnd_var — прямое имя HWND-переменной (приоритет)
+        hwnd_var = cfg.get('hwnd_var', '').strip('{}').strip()
+        if hwnd_var:
+            hwnd = int(self._context.get(hwnd_var, 0) or 0)
+            if not hwnd and self._project_variables:
+                pv = self._project_variables.get(hwnd_var)
+                hwnd = int((pv.get('value', 0) if isinstance(pv, dict) else pv) or 0)
+            if hwnd:
+                self._log(f"  🔍 HWND из hwnd_var '{hwnd_var}': {hwnd}")
+        # 2. inst_var → _open_programs → hwnd
+        inst_var = cfg.get('instance_var', '').strip('{}').strip()
         if not inst_var:
             inst_var = 'program_pid'
-
-        # 1. Пробуем inst_var — может быть PID или HWND
-        if inst_var and inst_var in self._context:
+        if not hwnd and inst_var and inst_var in self._context:
             inst_val = self._context[inst_var]
             open_progs = self._context.get('_open_programs', {})
             pid_str = str(inst_val)
@@ -6380,19 +7743,16 @@ except ImportError:
                     hwnd = int(inst_val)
                 except (ValueError, TypeError):
                     pass
-
-        # 2. Глобальный _program_hwnd из контекста
+        # 3. _program_hwnd
         if not hwnd:
             hwnd = self._context.get('_program_hwnd', 0)
-
-        # 3. Первый из открытых программ в контексте
+        # 4. _open_programs первый
         if not hwnd:
             for entry in self._context.get('_open_programs', {}).values():
                 hwnd = entry.get('hwnd', 0)
                 if hwnd:
                     break
-
-        # 4. Ищем окно по PID через EnumWindows (работает между запусками)
+        # 5. EnumWindows по PID (fallback)
         if not hwnd and inst_var and inst_var in self._context:
             try:
                 target_pid = int(self._context[inst_var])
@@ -6410,40 +7770,24 @@ except ImportError:
                 ctypes.windll.user32.EnumWindows(WNDENUMPROC(_cb), 0)
                 if _found:
                     hwnd = _found[0]
-                    self._context['_program_hwnd'] = hwnd
                     self._log(f"  🔍 HWND найден по PID {target_pid}: {hwnd}")
             except Exception:
                 pass
-
-        # 5. Сканируем все окна и берём первое подходящее (fallback)
-        if not hwnd:
-            try:
-                import ctypes
-                from ctypes import wintypes
-                _all_hwnds = []
-                def _cb_all(h, _):
-                    if ctypes.windll.user32.IsWindowVisible(h):
-                        _all_hwnds.append(h)
-                    return True
-                WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, ctypes.c_void_p)
-                ctypes.windll.user32.EnumWindows(WNDENUMPROC(_cb_all), 0)
-                # Проверяем hwnd_var из контекста
-                hwnd_var = cfg.get('hwnd_var', '').strip('{}').strip()
-                if hwnd_var and hwnd_var in self._context:
-                    try:
-                        hwnd = int(self._context[hwnd_var])
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        # 6. Читаем из workflow.metadata — персистентно между отдельными запусками
+        # 6. metadata — по hwnd_var, потом last
         if not hwnd and self._workflow:
             _meta = getattr(self._workflow, 'metadata', {}) or {}
-            hwnd = _meta.get('_last_program_hwnd', 0)
+            if hwnd_var:
+                for _entry in _meta.get('_open_programs_meta', {}).values():
+                    if _entry.get('hwnd_var') == hwnd_var:
+                        hwnd = int(_entry.get('hwnd', 0) or 0)
+                        if hwnd:
+                            self._log(f"  🔍 HWND из metadata по hwnd_var '{hwnd_var}': {hwnd}")
+                            break
+            if not hwnd:
+                hwnd = int(_meta.get('_last_program_hwnd', 0) or 0)
             if not hwnd:
                 for _entry in _meta.get('_open_programs_meta', {}).values():
-                    hwnd = _entry.get('hwnd', 0)
+                    hwnd = int(_entry.get('hwnd', 0) or 0)
                     if hwnd:
                         break
             if hwnd:
@@ -7610,27 +8954,28 @@ DOM (сокращённый): {context.get('dom_summary', '')[:8000]}
     
     def _sync_var_to_project(self, var_name: str, value: str):
         """Синхронизировать переменную контекста с project_variables."""
-        if not var_name or not self._project_variables:
+        if not var_name or self._project_variables is None:
+            return
+        if not isinstance(self._project_variables, dict):
             return
         
-        # Проверяем есть ли такая переменная в проекте
-        if isinstance(self._project_variables, dict) and var_name in self._project_variables:
-            # Обновляем значение
+        if var_name in self._project_variables:
             if isinstance(self._project_variables[var_name], dict):
                 self._project_variables[var_name]['value'] = str(value)
             else:
                 self._project_variables[var_name] = str(value)
-            
             self._log(f"  📝 Синхронизировано с проектом: {var_name} = {str(value)[:60]}")
-            
-            # Обновляем UI через сигнал (thread-safe)
-            self.signals.variable_updated.emit(var_name, str(value))
         else:
-            # Создаём переменную если её нет — важно для сниппетов с result_var
-            if isinstance(self._project_variables, dict):
-                self._project_variables[var_name] = str(value)
-                self._log(f"  📝 Создана новая переменная: {var_name} = {str(value)[:60]}")
-                self.signals.variable_updated.emit(var_name, str(value))
+            # Создаём с полной dict-структурой, как Variable Set
+            self._project_variables[var_name] = {
+                'value': str(value),
+                'default': '',
+                'type': 'string'
+            }
+            self._log(f"  📝 Создана новая переменная: {var_name} = {str(value)[:60]}")
+        
+        if hasattr(self, 'signals') and hasattr(self.signals, 'variable_updated'):
+            self.signals.variable_updated.emit(var_name, str(value))
     
     def _do_backup(self, label: str):
         """Бэкап рабочей папки перед выполнением узла."""

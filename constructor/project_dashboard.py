@@ -722,39 +722,41 @@ class ProgressBarDelegate(QStyledItemDelegate):
     """Делегат для отрисовки прогресс-бара в ячейке таблицы."""
     
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
+        # Guard: не рисуем если painter неактивен
+        if not painter.isActive():
+            return
         progress = index.data(Qt.ItemDataRole.UserRole)
         if progress is None:
             super().paint(painter, option, index)
             return
         
         painter.save()
-        
-        # Фон
-        rect = option.rect.adjusted(4, 4, -4, -4)
-        painter.setPen(Qt.PenStyle.NoPen)
         try:
-            from ui.theme_manager import get_color as _gc
-        except ImportError:
-            def _gc(k): return {
-                "bg2": "#1e2030", "ok": "#9ece6a", "ac": "#7aa2f7", "tx0": "#c0caf5"
-            }.get(k, "#c0caf5")
-        painter.setBrush(QColor(_gc("bg2")))
-        painter.drawRoundedRect(rect, 3, 3)
-        
-        # Заполнение
-        if progress > 0:
-            fill_rect = rect.adjusted(1, 1, -1, -1)
-            fill_rect.setWidth(int(fill_rect.width() * min(100, progress) / 100))
-            color = _gc("ok") if progress >= 100 else _gc("ac")
-            painter.setBrush(QColor(color))
-            painter.drawRoundedRect(fill_rect, 2, 2)
-        
-        # Текст
-        painter.setPen(QColor(_gc("tx0")))
-        text = f"{progress:.0f}%" if progress >= 0 else "∞"
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
-        
-        painter.restore()
+            rect = option.rect.adjusted(4, 4, -4, -4)
+            if rect.width() <= 0 or rect.height() <= 0:
+                return
+            painter.setPen(Qt.PenStyle.NoPen)
+            try:
+                from ui.theme_manager import get_color as _gc
+            except ImportError:
+                def _gc(k): return {
+                    "bg2": "#1e2030", "ok": "#9ece6a", "ac": "#7aa2f7", "tx0": "#c0caf5"
+                }.get(k, "#c0caf5")
+            painter.setBrush(QColor(_gc("bg2")))
+            painter.drawRoundedRect(rect, 3, 3)
+            
+            if progress > 0:
+                fill_rect = rect.adjusted(1, 1, -1, -1)
+                fill_rect.setWidth(int(fill_rect.width() * min(100, progress) / 100))
+                color = _gc("ok") if progress >= 100 else _gc("ac")
+                painter.setBrush(QColor(color))
+                painter.drawRoundedRect(fill_rect, 2, 2)
+            
+            painter.setPen(QColor(_gc("tx0")))
+            text = f"{progress:.0f}%" if progress >= 0 else "∞"
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+        finally:
+            painter.restore()
 
 
 # ══════════════════════════════════════════════════════════
@@ -794,7 +796,7 @@ class ProjectDashboard(QWidget):
         # Обновление таблицы
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._refresh_table)
-        self._refresh_timer.start(1000)
+        self._refresh_timer.start(2000)  # 2 сек достаточно, 1 сек вызывает лаги
         
         # ═══ Загружаем сохранённое состояние менеджера ═══
         self._manager.load_state()
@@ -974,14 +976,19 @@ class ProjectDashboard(QWidget):
     
     def _refresh_table(self, *_args):
         """Полное обновление таблицы."""
+        # Guard: не обновляем если виджет скрыт или не инициализирован
+        if not self.isVisible():
+            return
         projects = self._get_filtered_projects()
         
         self._table.setSortingEnabled(False)
+        self._table.blockSignals(True)
         self._table.setRowCount(len(projects))
         
         for row, entry in enumerate(projects):
             self._populate_row(row, entry)
         
+        self._table.blockSignals(False)
         self._table.setSortingEnabled(True)
         self._side_panel.update_counts(self._manager.get_all_projects())
     

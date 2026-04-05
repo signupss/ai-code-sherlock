@@ -12,7 +12,7 @@ class WorkflowView(QGraphicsView):
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
         self._item_drag_active = False  # Флаг: перетаскивание элемента внутри канваса
@@ -142,6 +142,18 @@ class WorkflowView(QGraphicsView):
             self._auto_scroll_timer.stop()
             super().mouseReleaseEvent(event)
     
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        scene = self.scene()
+        if scene is not None:
+            connecting = False
+            for item in scene.items():
+                if getattr(item, '_connecting', False):
+                    connecting = True
+                    break
+            if connecting:
+                QTimer.singleShot(0, scene.update)
+
     def keyPressEvent(self, event):
         # Перехватываем горячие клавиши и отправляем родителю (главному окну)
         modifiers = event.modifiers()

@@ -199,6 +199,7 @@ _RU_TO_EN: dict[str, str] = {
     "Менеджер проектов — управление всеми проектами\nЗапуск, остановка, расписание, потоки":
         "Project manager — manage all projects\nLaunch, stop, schedule, threads",
     # ── Lists / Tables inline panel ─────────────────────────
+    "📋 Списки / Таблицы":           "📋 Lists / Tables",
     "📋 Списки / Таблицы  ▼":        "📋 Lists / Tables  ▼",
     "📋 Списки / Таблицы  ▲":        "📋 Lists / Tables  ▲",
     "➕ Список":                      "➕ List",
@@ -4034,6 +4035,8 @@ _RU_TO_EN: dict[str, str] = {
     "🟨 JavaScript — выполнение JS кода":   "🟨 JavaScript — execution JS code",
     "🟨 Выполнить JS":                      "🟨 Execute JS",
     "🟨 Выполняю JavaScript (":             "🟨 Execute JavaScript (",
+    "🟨 JS Тестер":                         "🟨 JS Tester",
+    "🔣 X/JSON Path":                       "🔣 X/JSON Path",
     "🤖 AI АГЕНТЫ":                         "🤖 AI AGENTS",
     "🤖 BROWSER_AGENT: запрос к AI (таймаут":
             "🤖 BROWSER_AGENT: request to AI (time-out",
@@ -6165,7 +6168,7 @@ _RU_TO_EN: dict[str, str] = {
     "перейди":                              "go over",
     "пкт":                                  "pct",
     "повторяющимся ошибкам в логе":         "repeated errors in the log",
-    "подожди\s+(\d+)|wait\s+(\d+)":         "Wait\s+(\d+)|wait\s+(\d+)",
+    r"подожди\s+(\d+)|wait\s+(\d+)":        r"Wait\s+(\d+)|wait\s+(\d+)",
     "показано":                             "shown",
     "попыток.":                             "attempts.",
     "попыток. Последняя ошибка:":           "attempts. Last mistake:",
@@ -6901,6 +6904,198 @@ _RU_TO_EN: dict[str, str] = {
     "🪪 Browser Profile — операции с профилем":
             "🪪 Browser Profile — profile operations",
     "🪪 Операции с профилем":               "🪪 Profile Operations",
+    # ── 🕸️ Browser Parse ─────────────────────────────────────────────
+    "🕸️ Browser Parse — парсинг текста из браузера":
+        "🕸️ Browser Parse — extract text from browser",
+    "🕸️ Browser Parse":                     "🕸️ Browser Parse",
+    "Извлекает текст с веб-страницы. Поддерживает ручной выбор элемента "
+    "(клик по нужному блоку), CSS/XPath-селектор и универсальный AI-парсер. "
+    "Результат → переменная или список проекта.":
+        "Extracts text from a web page. Supports interactive element selection, "
+        "CSS/XPath selectors, and a universal AI parser. Result → variable or project list.",
+    "Инстанс браузера ({var}):":            "Browser instance ({var}):",
+    "Переменная с ID открытого браузера":   "Variable with the ID of the open browser",
+    "Режим выбора элемента:":               "Element selection mode:",
+    "🖱 Интерактивный выбор (клик по элементу)": "🖱 Interactive selection (click on element)",
+    "🔤 CSS-селектор":                      "🔤 CSS selector",
+    "📍 XPath":                             "📍 XPath",
+    "📄 Весь текст страницы":               "📄 Full page text",
+    "📊 Таблицы на странице":               "📊 Tables on the page",
+    "🤖 Универсальный AI-парсер":           "🤖 Universal AI parser",
+    "CSS-селектор:":                        "CSS selector:",
+    "Пример: div.price, #content h1, .article-body p":
+        "Example: div.price, #content h1, .article-body p",
+    "XPath:":                               "XPath:",
+    "Пример: //div[@class=\"price\"]//span":
+        "Example: //div[@class=\"price\"]//span",
+    "Задача для AI-парсера:":               "Task for AI parser:",
+    "Опишите что нужно найти: \"цена товара\", \"заголовок статьи\". "
+    "Работает даже при изменении структуры сайта.":
+        "Describe what to find: \"product price\", \"article title\". "
+        "Works even when the site structure changes.",
+    "Что брать:":                           "What to take:",
+    "Первый найденный":                     "First match",
+    "Все совпадения":                       "All matches",
+    "Текст + атрибуты":                     "Text + attributes",
+    "🖱 Выбрать элемент на странице:":      "🖱 Select element on the page:",
+    "Нажмите \"Открыть пикер\", кликните по нужному тексту на скриншоте браузера — "
+    "CSS-селектор сохранится автоматически":
+        "Press \"Open picker\", click the desired text on the browser screenshot — "
+        "the CSS selector will be saved automatically",
+    "Фолбэк: AI-парсер если элемент не найден":
+        "Fallback: AI parser if element not found",
+    "При изменении структуры сайта попытается найти нужные данные через AI":
+        "If the site structure changes, will attempt to find the data via AI",
+    "→ Переменная:":                        "→ Variable:",
+    "Имя переменной для результата":        "Variable name for result",
+    "→ Список:":                            "→ List:",
+    "Имя списка (для \"все совпадения\")":  "List name (for \"all matches\")",
+    "→ Таблица:":                           "→ Table:",
+    "Имя таблицы (для таблиц на странице)":"Table name (for page tables)",
+    "Ожидание загрузки (мс):":             "Load wait (ms):",
+    "Подождать N мс перед парсингом (для динамического контента)":
+        "Wait N ms before parsing (for dynamic content)",
+    # ── Picker dialog strings ────────────────────────────────────────
+    "🖱 Открыть пикер":                     "🖱 Open picker",
+    "🖱 Выбор элемента — кликните по нужному тексту на странице":
+        "🖱 Element picker — click the desired text on the page",
+    "👆 Зажмите ЛКМ и выделите область с нужным текстом, "
+    "или ПКМ по тексту → «Использовать этот элемент». "
+    "Жёлтая рамка = найденный элемент.":
+        "👆 Hold LMB and drag over the desired text, "
+        "or RMB on text → 'Use this element'. "
+        "Yellow frame = found element.",
+    "⬆ Кликните по элементу выше":         "⬆ Click on the element above",
+    "🔄 Обновить скриншот":                 "🔄 Refresh screenshot",
+    "🔄 Скриншот обновлён. Кликните по элементу.":
+        "🔄 Screenshot refreshed. Click on the element.",
+    "🖱 Использовать этот элемент для парсинга":
+        "🖱 Use this element for parsing",
+    "⚠ Элемент не найден — попробуйте другую область":
+        "⚠ Element not found — try a different area",
+    "Элемент не выбран":                    "Element not selected",
+    # ── Program Launch extra strings ────────────────────────────────
+    "⚙️ Запуск программы — внешние утилиты и скрипты":
+        "⚙️ Program Launch — external tools and scripts",
+    "Запуск .exe, .bat, Python-скриптов, ffmpeg, ImageMagick и т.д. Переменные: {var_name}":
+        "Launch .exe, .bat, Python scripts, ffmpeg, ImageMagick, etc. Variables: {var_name}",
+    "🛑 Программа остановлена по сигналу Stop":
+        "🛑 Program stopped by Stop signal",
+    "⏱ Таймаут":                            "⏱ Timeout",
+    "🛑 Программа остановлена вручную":     "🛑 Program stopped manually",
+    "⏱ Программа остановлена по таймауту": "⏱ Program stopped by timeout",
+    "⚠ Не удалось запустить процесс:":     "⚠ Failed to start process:",
+    "Ошибка запуска программы:":            "Program launch error:",
+    "📁 Обнаружены файлы:":                 "📁 Files detected:",
+    # ── 🔬 Program Inspector ─────────────────────────────────────────────
+    "🔬 Program Inspector — инспекция открытой программы":
+        "🔬 Program Inspector — open program inspection",
+    "Читает все элементы открытой программы: кнопки, текстовые поля, "
+    "лейблы, чекбоксы, координаты. Полная автоматизация без скриншотов. "
+    "Результат → переменные, списки или таблица.":
+        "Reads all elements of the open program: buttons, text fields, "
+        "labels, checkboxes, coordinates. Full automation without screenshots. "
+        "Result → variables, lists or table.",
+    "Источник окна:":                       "Window source:",
+    "По переменной HWND":                   "By HWND variable",
+    "По заголовку окна":                    "By window title",
+    "По PID процесса":                      "By process PID",
+    "Активное окно":                        "Active window",
+    "Переменная HWND:":                     "HWND variable:",
+    "Переменная содержащая handle окна":    "Variable containing window handle",
+    "Заголовок окна (поиск):":              "Window title (search):",
+    "Часть заголовка для поиска. Пример: Notepad, Chrome":
+        "Part of title to search. Example: Notepad, Chrome",
+    "Переменная PID:":                      "PID variable:",
+    "Переменная содержащая PID процесса":   "Variable containing process PID",
+    "Что читать:":                          "What to read:",
+    "🔬 Полный дамп всех элементов":        "🔬 Full dump of all elements",
+    "🔘 Только кнопки":                     "🔘 Buttons only",
+    "📝 Только текстовые поля":             "📝 Text fields only",
+    "🏷 Только лейблы и статичный текст":   "🏷 Labels and static text only",
+    "☑ Чекбоксы и радиокнопки":            "☑ Checkboxes and radio buttons",
+    "📋 Меню и пункты меню":               "📋 Menus and menu items",
+    "🪟 Список всех дочерних окон":         "🪟 List of all child windows",
+    "📊 В виде таблицы элементов":          "📊 As element table",
+    "Фильтр по классу (Win32):":            "Class filter (Win32):",
+    "Пример: Button, Edit, Static. Пусто = все классы":
+        "Example: Button, Edit, Static. Empty = all classes",
+    "Сохранять координаты (x, y, w, h)":   "Save coordinates (x, y, w, h)",
+    "Добавить позицию и размер каждого элемента":
+        "Add position and size of each element",
+    "Сохранять состояние (enabled/checked)":
+        "Save state (enabled/checked)",
+    "Добавить флаги: активен, отмечен, видим":
+        "Add flags: enabled, checked, visible",
+    "Читать текст элементов":               "Read element text",
+    "Прочитать содержимое каждого контрола через WinAPI":
+        "Read each control content via WinAPI",
+    "Глубина дерева элементов:":            "Element tree depth:",
+    "Сколько уровней вложенности читать. Больше = медленнее.":
+        "How many nesting levels to read. More = slower.",
+    "AI-интерпретация дампа":               "AI dump interpretation",
+    "Отправить дамп в AI для создания удобной структуры":
+        "Send dump to AI for structured output",
+    "Что нужно найти/сделать с данными. Пример: \"координаты кнопки ОК\"":
+        "What to find/do with data. Example: \"coordinates of OK button\"",
+    "Сохранить в:":                         "Save to:",
+    "📝 Переменную (JSON)":                 "📝 Variable (JSON)",
+    "→ Переменная (JSON):":                 "→ Variable (JSON):",
+    "JSON-строка со всеми элементами":      "JSON string with all elements",
+    "Таблица: class | text | x | y | w | h | enabled | checked":
+        "Table: class | text | x | y | w | h | enabled | checked",
+    "→ Список текстов:":                    "→ Text list:",
+    "Просто список текстовых значений всех найденных элементов":
+        "Simple list of text values of all found elements",
+    "🔬 Инспекция программы":              "🔬 Program Inspection",
+    # ── 📦 Project In Project ─────────────────────────────────────────────
+    "📦 Проект в проекте":                  "📦 Project in Project",
+    "Запускает внешний проект как подпроект. Переменные передаются "
+    "туда и обратно по заданному сопоставлению.":
+        "Runs an external project as a subproject. Variables are passed "
+        "in and out by the defined mapping.",
+    "Путь к проекту (.json):":              "Path to project (.json):",
+    "Сопоставлять переменные с одинаковыми именами":
+        "Map variables with matching names",
+    "Не возвращать значения при неудаче":   "Do not return values on failure",
+    "Если включено — изменения переменных во вложенном проекте игнорируются при ошибке":
+        "If enabled — subproject variable changes are ignored on error",
+    "Передавать project.Context (C# объекты)":
+        "Pass project.Context (C# objects)",
+    "Сопоставление переменных (по одному на строку):":
+        "Variable mapping (one per line):",
+    "# Формат: внешняя_переменная = внутренняя_переменная\n# Пример:\n# login = user_login\n# password = user_pass":
+        "# Format: outer_variable = inner_variable\n# Example:\n# login = user_login\n# password = user_pass",
+    "Ручное сопоставление имеет приоритет над \"одинаковые имена\"":
+        "Manual mapping takes priority over \"matching names\"",
+    # ── Browser palette button ───────────────────────────────────────────
+    "🕸️ Парсинг текста из браузера":        "🕸️ Parse text from browser",
+    # ── 🟨 JS Tester tab content ─────────────────────────────────────────
+    "Проверка JS-кода локального выполнения. "
+    "Тестер покажет результат и готовый фрагмент для вставки в сниппет.":
+        "Test local JavaScript execution. "
+        "The tester shows the result and a ready snippet to paste into the action.",
+    "1. Код для проверки:":                 "1. Code to test:",
+    "2. Формат для экшена JS:":             "2. Format for JS action:",
+    "Как есть (raw)":                       "As-is (raw)",
+    "Одна строка (escaped)":                "Single line (escaped)",
+    "📋 Копировать для вставки":            "📋 Copy for paste",
+    "3. Результат выполнения:":             "3. Execution result:",
+    "Node.js не найден. Установите node.js для выполнения JS-кода.":
+        "Node.js not found. Install node.js to execute JS code.",
+    # ── 🔣 X/JSON Path tab content ───────────────────────────────────────
+    "Проверка XPath и JSONPath выражений. "
+    "Вставьте XML/JSON в поле Данные, введите выражение и нажмите Тест.":
+        "Test XPath and JSONPath expressions. "
+        "Paste XML/JSON into the Data field, enter an expression and press Test.",
+    "1. Данные (XML / JSON):":              "1. Data (XML / JSON):",
+    "2. Выражение:":                        "2. Expression:",
+    "✨ Beautify":                           "✨ Beautify",
+    "3. Результат:":                        "3. Result:",
+    "Заполните Данные и Выражение.":        "Fill in Data and Expression.",
+    "Установите: pip install jsonpath-ng":  "Install: pip install jsonpath-ng",
+    "Или используйте режим XPath для XML.": "Or use XPath mode for XML.",
+    "Установите: pip install lxml":         "Install: pip install lxml",
 }
 
 # Build reverse table for completeness

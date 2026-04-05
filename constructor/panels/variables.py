@@ -57,7 +57,6 @@ class ProjectVariablesPanel(QWidget):
         """Загрузить переменные при открытии проекта."""
         self._workflow = workflow
         
-        # Обновляем отображение таблицы (ищем подходящий метод обновления)
         if hasattr(self, '_refresh_table'):
             self._refresh_table()
         elif hasattr(self, '_update_ui'):
@@ -65,8 +64,8 @@ class ProjectVariablesPanel(QWidget):
         elif hasattr(self, 'refresh'):
             self.refresh()
 
-        # Загружаем списки и таблицы
         self._load_lists_tables_from_workflow()
+        self._load_global_vars_from_workflow()
     
     def _apply_styles(self):
         """Применить текущие цвета темы ко всем виджетам панели"""
@@ -464,6 +463,14 @@ class ProjectVariablesPanel(QWidget):
         
         regex_layout.addStretch()
         self._tabs.addTab(regex_widget, tr("🔍 Regex Тестер"))
+
+        # ── Таб: JS Тестер ────────────────────────────────────────
+        js_widget = self._build_js_tester_tab()
+        self._tabs.addTab(js_widget, tr("🟨 JS Тестер"))
+
+        # ── Таб: XPath / JSONPath Тестер ─────────────────────────
+        xjson_widget = self._build_xjson_tester_tab()
+        self._tabs.addTab(xjson_widget, tr("🔣 X/JSON Path"))
         
         # ── Таб: Списки / Таблицы ─────────────────────────────────
         self._tabs.addTab(self._build_lists_tables_tab(), tr("📋 Списки / Таблицы"))
@@ -533,6 +540,7 @@ class ProjectVariablesPanel(QWidget):
             f"QTableWidget {{ background: {get_color('bg0')}; color: {get_color('tx0')}; "
             f"gridline-color: {get_color('bd2')}; border: 1px solid {get_color('bd')}; }}"
         )
+        self._global_var_table.cellChanged.connect(self._save_global_vars_to_workflow)
         lay.addWidget(self._global_var_table)
 
         info = QLabel(tr("Эти переменные доступны из всех потоков при многопоточном запуске через менеджер."))
@@ -581,19 +589,29 @@ class ProjectVariablesPanel(QWidget):
         if not isinstance(meta, dict):
             return
         gvars = meta.get('global_variables', [])
-        self._global_var_table.setRowCount(0)
-        for gv in gvars:
-            if not isinstance(gv, dict):
-                continue
-            row = self._global_var_table.rowCount()
-            self._global_var_table.insertRow(row)
-            self._global_var_table.setItem(row, 0, QTableWidgetItem(gv.get('name', '')))
-            self._global_var_table.setItem(row, 1, QTableWidgetItem(gv.get('value', '')))
-            self._global_var_table.setItem(row, 2, QTableWidgetItem(gv.get('default', '')))
+        # Не затираем таблицу если в metadata ещё нет данных, но в таблице уже что-то есть
+        if not gvars and self._global_var_table.rowCount() > 0:
+            return
+        self._global_var_table.blockSignals(True)
+        try:
+            self._global_var_table.setRowCount(0)
+            for gv in gvars:
+                if not isinstance(gv, dict):
+                    continue
+                row = self._global_var_table.rowCount()
+                self._global_var_table.insertRow(row)
+                self._global_var_table.setItem(row, 0, QTableWidgetItem(gv.get('name', '')))
+                self._global_var_table.setItem(row, 1, QTableWidgetItem(gv.get('value', '')))
+                self._global_var_table.setItem(row, 2, QTableWidgetItem(gv.get('default', '')))
+        finally:
+            self._global_var_table.blockSignals(False)
     
     def _on_main_tab_changed(self, index: int):
         """Вызывается при переключении основных вкладок панели переменных."""
-        # Используем индекс, а не текст — текст меняется при смене языка
+        # Сохраняем глобальные переменные при уходе с любой другой вкладки
+        # (на случай если cellChanged не сработал — доп. страховка)
+        self._save_global_vars_to_workflow()
+
         # 0: Переменные, 1: Regex, 2: Списки/Таблицы, 3: Глобальные, 4: Заметки
         if index == 2:
             self._load_lists_tables_from_workflow()
@@ -651,7 +669,8 @@ class ProjectVariablesPanel(QWidget):
         self._workflow = wf
         self._reload_variables()
         self._reload_notes()
-        self._load_lists_tables_from_workflow()   # ← ДОБАВИТЬ
+        self._load_lists_tables_from_workflow()
+        self._load_global_vars_from_workflow()
         # Принудительно сбрасываем переменные к дефолтным при загрузке
         self.reset_variables_to_defaults()
 
@@ -1324,6 +1343,7 @@ class ProjectVariablesPanel(QWidget):
     def get_variables_for_context(self) -> dict:
         """Получить переменные для подстановки в контексте выполнения.
         Берём ТЕКУЩИЕ значения из таблицы UI (колонка Значение), а не из модели.
+        Включает глобальные переменные из metadata['global_variables'].
         """
         if not self._workflow:
             return {}
@@ -1335,9 +1355,8 @@ class ProjectVariablesPanel(QWidget):
             value_item = self._var_table.item(row, 1)
             if name_item and name_item.text().strip():
                 ui_values[name_item.text().strip()] = value_item.text() if value_item else ''
-        
+
         for name, info in getattr(self._workflow, 'project_variables', {}).items():
-            # Приоритет: значение из UI таблицы > модель > дефолт
             val = ui_values.get(name, info.get('value', info.get('default', '')))
             var_type = info.get('type', 'string')
             try:
@@ -1353,6 +1372,26 @@ class ProjectVariablesPanel(QWidget):
             except Exception:
                 pass
             result[name] = val
+
+        # ── Добавляем глобальные переменные из metadata (приоритет: UI таблица > metadata) ──
+        _meta = getattr(self._workflow, 'metadata', {}) or {}
+        if isinstance(_meta, dict):
+            # Читаем актуальные значения из UI таблицы глобальных переменных
+            _global_ui = {}
+            if hasattr(self, '_global_var_table'):
+                for _r in range(self._global_var_table.rowCount()):
+                    _n = self._global_var_table.item(_r, 0)
+                    _v = self._global_var_table.item(_r, 1)
+                    if _n and _n.text().strip():
+                        _global_ui[_n.text().strip()] = _v.text() if _v else ''
+            for gv in _meta.get('global_variables', []):
+                if not isinstance(gv, dict):
+                    continue
+                gname = gv.get('name', '').strip()
+                if not gname:
+                    continue
+                gval = _global_ui.get(gname, gv.get('value', gv.get('default', '')))
+                result[gname] = gval   # глобальные не перетирают уже вычисленные project vars
         return result
     
     def reset_variables_to_defaults(self):
@@ -1407,12 +1446,26 @@ class ProjectVariablesPanel(QWidget):
         self._workflow.metadata = meta  
     
     def get_variables(self) -> dict:
-        """Получить все переменные в формате {name: {...}}"""
+        """Получить все переменные в формате {name: {...}}, включая глобальные."""
         result = {}
         if hasattr(self, '_workflow') and self._workflow:
-            # Если есть прямая ссылка на workflow
             if hasattr(self._workflow, 'project_variables'):
-                return self._workflow.project_variables.copy()
+                result = self._workflow.project_variables.copy()
+            # Добавляем глобальные переменные из metadata
+            _meta = getattr(self._workflow, 'metadata', {}) or {}
+            if isinstance(_meta, dict):
+                for gv in _meta.get('global_variables', []):
+                    if not isinstance(gv, dict):
+                        continue
+                    gname = gv.get('name', '').strip()
+                    if gname and gname not in result:
+                        result[gname] = {
+                            'value':   gv.get('value', gv.get('default', '')),
+                            'type':    'string',
+                            'default': gv.get('default', ''),
+                            'description': '🌍 global',
+                        }
+            return result
         # Или собираем из таблицы
         if hasattr(self, '_var_table'):
             for row in range(self._var_table.rowCount()):
@@ -1515,7 +1568,222 @@ class ProjectVariablesPanel(QWidget):
         if ends: explanation.append(f"заканчивается на «{ends}»")
         if after: explanation.append(f"перед «{after}»")
         self._regex_status.setText(f"🔨 Собрано: {' → '.join(explanation)}")
+    
+    # ══════════════════════════════════════════════════════
+    #  JS ТЕСТЕР
+    # ══════════════════════════════════════════════════════
 
+    def _build_js_tester_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(6, 6, 6, 6)
+
+        lbl_info = QLabel(tr(
+            "Проверка JS-кода локального выполнения. "
+            "Тестер покажет результат и готовый фрагмент для вставки в сниппет."
+        ))
+        lbl_info.setWordWrap(True)
+        lbl_info.setStyleSheet("color: #7AA2F7; font-size: 11px; padding-bottom: 4px;")
+        lay.addWidget(lbl_info)
+
+        # Редактор кода
+        lay.addWidget(QLabel(tr("1. Код для проверки:")))
+        self._js_editor = QPlainTextEdit()
+        self._js_editor.setPlaceholderText("// ваш JavaScript\nreturn 'hello';")
+        self._js_editor.setStyleSheet(
+            f"font-family: 'JetBrains Mono', Consolas, monospace; font-size: 12px;"
+        )
+        self._js_editor.setMinimumHeight(120)
+        lay.addWidget(self._js_editor)
+
+        # Режим вставки
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr("2. Формат для экшена JS:")))
+        self._js_mode_combo = QComboBox()
+        self._js_mode_combo.addItem(tr("Как есть (raw)"), "raw")
+        self._js_mode_combo.addItem(tr("Одна строка (escaped)"), "oneline")
+        self._js_mode_combo.addItem(tr("Base64"), "base64")
+        row.addWidget(self._js_mode_combo)
+        lay.addLayout(row)
+
+        # Кнопка теста
+        btn_row = QHBoxLayout()
+        self._js_btn_test = QPushButton(tr("▶ Тест"))
+        self._js_btn_test.clicked.connect(self._run_js_test)
+        btn_row.addWidget(self._js_btn_test)
+        self._js_btn_copy = QPushButton(tr("📋 Копировать для вставки"))
+        self._js_btn_copy.clicked.connect(self._copy_js_for_snippet)
+        btn_row.addWidget(self._js_btn_copy)
+        lay.addLayout(btn_row)
+
+        # Результат
+        lay.addWidget(QLabel(tr("3. Результат выполнения:")))
+        self._js_result = QPlainTextEdit()
+        self._js_result.setReadOnly(True)
+        self._js_result.setMaximumHeight(80)
+        lay.addWidget(self._js_result)
+
+        lay.addStretch()
+        return w
+
+    def _run_js_test(self):
+        """Выполнить JS через subprocess node.js или встроенный движок."""
+        import subprocess, shutil
+        code = self._js_editor.toPlainText().strip()
+        if not code:
+            self._js_result.setPlainText(tr("Нет кода для выполнения."))
+            return
+
+        wrapped = f"(function(){{\n{code}\n}})();"
+        node_bin = shutil.which("node")
+        if node_bin:
+            try:
+                r = subprocess.run(
+                    [node_bin, "-e", f"console.log({wrapped})"],
+                    capture_output=True, text=True, timeout=5
+                )
+                out = r.stdout.strip() or r.stderr.strip() or "(нет вывода)"
+                self._js_result.setPlainText(out)
+            except Exception as e:
+                self._js_result.setPlainText(f"Ошибка: {e}")
+        else:
+            self._js_result.setPlainText(
+                tr("Node.js не найден. Установите node.js для выполнения JS-кода.")
+            )
+
+    def _copy_js_for_snippet(self):
+        """Скопировать JS в буфер в выбранном формате."""
+        import base64 as _b64
+        code = self._js_editor.toPlainText().strip()
+        mode = self._js_mode_combo.currentData()
+        if mode == "oneline":
+            result = code.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        elif mode == "base64":
+            result = _b64.b64encode(code.encode()).decode()
+        else:
+            result = code
+        QApplication.clipboard().setText(result)
+
+    # ══════════════════════════════════════════════════════
+    #  X/JSON PATH ТЕСТЕР
+    # ══════════════════════════════════════════════════════
+
+    def _build_xjson_tester_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(6, 6, 6, 6)
+
+        lbl_info = QLabel(tr(
+            "Проверка XPath и JSONPath выражений. "
+            "Вставьте XML/JSON в поле Данные, введите выражение и нажмите Тест."
+        ))
+        lbl_info.setWordWrap(True)
+        lbl_info.setStyleSheet("color: #7AA2F7; font-size: 11px; padding-bottom: 4px;")
+        lay.addWidget(lbl_info)
+
+        # Выбор режима
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel(tr("Режим:")))
+        self._xj_mode = QComboBox()
+        self._xj_mode.addItem("JSONPath", "jsonpath")
+        self._xj_mode.addItem("XPath", "xpath")
+        mode_row.addWidget(self._xj_mode)
+        mode_row.addStretch()
+        lay.addLayout(mode_row)
+
+        # Данные
+        lay.addWidget(QLabel(tr("1. Данные (XML / JSON):")))
+        self._xj_data = QPlainTextEdit()
+        self._xj_data.setPlaceholderText('{"store": {"book": [{"title": "Moby Dick"}]}}')
+        self._xj_data.setMinimumHeight(100)
+        self._xj_data.setStyleSheet(
+            "font-family: 'JetBrains Mono', Consolas, monospace; font-size: 11px;"
+        )
+        lay.addWidget(self._xj_data)
+
+        # Выражение
+        expr_row = QHBoxLayout()
+        expr_row.addWidget(QLabel(tr("2. Выражение:")))
+        self._xj_expr = QLineEdit()
+        self._xj_expr.setPlaceholderText("$.store.book[*].title")
+        expr_row.addWidget(self._xj_expr)
+        lay.addLayout(expr_row)
+
+        # Кнопки
+        btn_row = QHBoxLayout()
+        self._xj_btn_test = QPushButton(tr("▶ Тест"))
+        self._xj_btn_test.clicked.connect(self._run_xjson_test)
+        btn_row.addWidget(self._xj_btn_test)
+        self._xj_btn_beautify = QPushButton(tr("✨ Beautify"))
+        self._xj_btn_beautify.clicked.connect(self._beautify_xjson_data)
+        btn_row.addWidget(self._xj_btn_beautify)
+        lay.addLayout(btn_row)
+
+        # Результат
+        lay.addWidget(QLabel(tr("3. Результат:")))
+        self._xj_result = QPlainTextEdit()
+        self._xj_result.setReadOnly(True)
+        self._xj_result.setMaximumHeight(90)
+        lay.addWidget(self._xj_result)
+
+        lay.addStretch()
+        return w
+
+    def _run_xjson_test(self):
+        mode = self._xj_mode.currentData()
+        raw = self._xj_data.toPlainText().strip()
+        expr = self._xj_expr.text().strip()
+        if not raw or not expr:
+            self._xj_result.setPlainText(tr("Заполните Данные и Выражение."))
+            return
+        try:
+            if mode == "jsonpath":
+                import json as _json
+                try:
+                    from jsonpath_ng import parse as jp_parse
+                    data = _json.loads(raw)
+                    matches = [m.value for m in jp_parse(expr).find(data)]
+                    self._xj_result.setPlainText(_json.dumps(matches, ensure_ascii=False, indent=2))
+                except ImportError:
+                    self._xj_result.setPlainText(
+                        tr("Установите: pip install jsonpath-ng") + "\n\n"
+                        + tr("Или используйте режим XPath для XML.")
+                    )
+            else:
+                # XPath
+                try:
+                    from lxml import etree
+                    root = etree.fromstring(raw.encode())
+                    results = root.xpath(expr)
+                    out = []
+                    for r in results:
+                        if isinstance(r, etree._Element):
+                            out.append(etree.tostring(r, encoding='unicode'))
+                        else:
+                            out.append(str(r))
+                    self._xj_result.setPlainText("\n".join(out) if out else tr("(нет совпадений)"))
+                except ImportError:
+                    self._xj_result.setPlainText(tr("Установите: pip install lxml"))
+        except Exception as e:
+            self._xj_result.setPlainText(f"Ошибка: {e}")
+
+    def _beautify_xjson_data(self):
+        raw = self._xj_data.toPlainText().strip()
+        mode = self._xj_mode.currentData()
+        try:
+            if mode == "jsonpath":
+                import json as _json
+                data = _json.loads(raw)
+                self._xj_data.setPlainText(_json.dumps(data, ensure_ascii=False, indent=2))
+            else:
+                from lxml import etree
+                root = etree.fromstring(raw.encode())
+                self._xj_data.setPlainText(
+                    etree.tostring(root, pretty_print=True, encoding='unicode')
+                )
+        except Exception as e:
+            self._xj_result.setPlainText(f"Beautify error: {e}")
+    
     def _regex_to_snippet_field(self):
         """Вставить regex из тестера в поле 'pattern' текущего сниппета."""
         pattern = self._regex_pattern.text()

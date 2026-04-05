@@ -133,6 +133,17 @@ class ProjectEntry:
         return max(0, self.total_executions - self.total_attempts)
     
     def to_dict(self) -> dict:
+        # Сохраняем global_variables из workflow.metadata если есть
+        global_vars = []
+        if self.workflow is not None:
+            try:
+                meta = getattr(self.workflow, 'metadata', None) or {}
+                if isinstance(meta, str):
+                    import json as _j
+                    meta = _j.loads(meta) if meta.strip() else {}
+                global_vars = meta.get('global_variables', [])
+            except Exception:
+                pass
         return {
             "project_id": self.project_id,
             "name": self.name,
@@ -156,6 +167,7 @@ class ProjectEntry:
             "failed_executions": self.failed_executions,
             "added_at": self.added_at,
             "input_settings": self.input_settings,
+            "global_variables": global_vars,
         }
     
     @classmethod
@@ -168,6 +180,10 @@ class ProjectEntry:
                 entry.stop_condition = StopCondition(v)
             elif k == "status":
                 entry.status = ProjectStatus(v)
+            elif k == "global_variables":
+                # Сохраняем для последующего восстановления в workflow.metadata
+                entry.input_settings = entry.input_settings or {}
+                entry.input_settings['_restored_global_variables'] = v
             elif hasattr(entry, k):
                 setattr(entry, k, v)
         return entry
@@ -352,6 +368,19 @@ class ProjectExecutor(QThread):
             project_vars = {}
             if hasattr(self._entry, 'input_settings') and self._entry.input_settings:
                 project_vars.update(self._entry.input_settings.get('variables', {}))
+                # Восстанавливаем global_variables в metadata workflow
+                restored_gvars = self._entry.input_settings.get('_restored_global_variables', [])
+                if restored_gvars and workflow_copy is not None:
+                    try:
+                        meta = getattr(workflow_copy, 'metadata', None) or {}
+                        if isinstance(meta, str):
+                            import json as _jmeta
+                            meta = _jmeta.loads(meta) if meta.strip() else {}
+                        if not meta.get('global_variables'):
+                            meta['global_variables'] = restored_gvars
+                        workflow_copy.metadata = meta
+                    except Exception as _e:
+                        self.signals.log.emit(pid, tnum, f"⚠ Восстановление global_variables: {_e}")
             
             project_root = workflow_copy.project_root or (str(Path(self._entry.file_path).parent) if self._entry.file_path else "")
             

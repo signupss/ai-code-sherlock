@@ -899,41 +899,42 @@ class ProjectTab(QWidget):
         layout.addWidget(self.tray_panel, 0, Qt.AlignmentFlag.AlignBottom)
     
     def resizeEvent(self, event):
-        """Переопределяем чтобы предотвратить появление пустой области при ресайзе"""
         super().resizeEvent(event)
-        # FIX: Если трей виден, принудительно ограничиваем его высоту
         if self.tray_panel.isVisible():
             self.tray_panel.setMaximumHeight(120)
             self.tray_panel.setFixedHeight(min(self.tray_panel.sizeHint().height(), 120))
-    
+
     def send_browser_to_tray(self, instance_id: str, label: str = ""):
-        """Отправить браузер в трей + полностью скрыть окно"""
-        # FIX: Блокируем обновление layout на время добавления
-        self.layout().setEnabled(False)
-        
+        """Отправить браузер в трей + полностью скрыть окно."""
         self.tray_panel.add_instance(instance_id, label or "Browser")
+        self.tray_panel.setFixedHeight(min(self.tray_panel.sizeHint().height(), 120))
         self.tray_panel.setVisible(True)
-        
+
         inst = self.browser_manager.get_instance(instance_id)
         if inst:
-            # Убеждаемся, что окно действительно скрыто
-            inst.minimize_window()           # ваш текущий метод
+            inst.minimize_window()
             QTimer.singleShot(800, lambda: inst.hide_window() if hasattr(inst, 'hide_window') else None)
-    
-        # FIX: Включаем layout обратно и принудительно обновляем только эту панель
-        self.layout().setEnabled(True)
-        self.tray_panel.updateGeometry()
-        # Не трогаем resize/main window
-    
-    def _activate_local_layout(self):
-        """Активировать layout этого таба без изменения размера окна"""
+
+        # Defer repaint: ждём следующий event-loop чтобы layout устоялся — убирает ghost-область
+        QTimer.singleShot(0, self._repaint_after_tray)
+
+    def _repaint_after_tray(self):
+        """Перерисовать canvas после показа трея, убирает пустую ghost-область."""
         if self.layout():
             self.layout().activate()
-        # Не вызываем adjustSize() чтобы не менять размер главного окна
-    
+        if self.view and self.view.viewport():
+            self.view.viewport().update()
+        self.update()
+
+    def _activate_local_layout(self):
+        if self.layout():
+            self.layout().activate()
+
     def _fix_tray_layout(self):
-        """Устаревший метод - делегируем локальной активации"""
         self._activate_local_layout()
+        if self.view and self.view.viewport():
+            self.view.viewport().update()
+        self.update()
 
     def remove_from_tray(self, instance_id: str):
         """Удалить браузер из трея и скрыть панель если пусто"""
@@ -959,6 +960,99 @@ class ProjectTab(QWidget):
         # FIX: Сбрасываем ограничения высоты при скрытии
         self.tray_panel.setMaximumHeight(16777215)  # Qt default unlimited
         self.tray_panel.setMinimumHeight(0)
+
+class ProjectSearchDialog(QDialog):
+    """Диалог поиска нод/переменных по проекту (Ctrl+F)."""
+
+    def __init__(self, workflow, scene, parent=None):
+        super().__init__(parent)
+        self._workflow = workflow
+        self._scene = scene
+        self.setWindowTitle(tr("🔍 Поиск по проекту"))
+        self.setMinimumWidth(420)
+        self.setMinimumHeight(340)
+
+        lay = QVBoxLayout(self)
+
+        # Описание
+        lbl = QLabel(tr(
+            "Введите id экшена, название ноды или имя переменной. "
+            "Двойной клик — перейти к элементу."
+        ))
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet("color: #7AA2F7; font-size: 11px; padding-bottom: 4px;")
+        lay.addWidget(lbl)
+
+        # Поле поиска
+        row = QHBoxLayout()
+        self._inp = QLineEdit()
+        self._inp.setPlaceholderText(tr("id ноды, имя или {переменная}..."))
+        self._inp.textChanged.connect(self._do_search)
+        row.addWidget(self._inp)
+        btn_go = QPushButton(tr("🔍 Найти"))
+        btn_go.clicked.connect(self._do_search)
+        row.addWidget(btn_go)
+        lay.addLayout(row)
+
+        # Список результатов
+        self._results = QListWidget()
+        self._results.itemDoubleClicked.connect(self._jump_to_item)
+        lay.addWidget(self._results)
+
+        # Кнопки закрытия
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+        # Авто-поиск при открытии если буфер обмена содержит что-то
+        clip = QApplication.clipboard().text().strip()
+        if clip and len(clip) < 40:
+            self._inp.setText(clip)
+
+    def _do_search(self):
+        query = self._inp.text().strip().lower()
+        self._results.clear()
+        if not query or not self._workflow:
+            return
+
+        for node in self._workflow.nodes:
+            # Ищем по id, имени, описанию, типу, и переменным в snippet_config
+            haystack = " ".join([
+                node.id.lower(),
+                node.name.lower(),
+                node.description.lower(),
+                node.agent_type.value.lower(),
+                str(getattr(node, 'snippet_config', {})).lower(),
+                node.user_prompt_template.lower(),
+                node.system_prompt.lower(),
+            ])
+            if query in haystack:
+                icon = "🤖"
+                from constructor.constants import _AGENT_ICONS
+                icon = _AGENT_ICONS.get(node.agent_type, "🤖")
+                item = QListWidgetItem(
+                    f"{icon} [{node.id}]  {node.name}  ({node.agent_type.value})"
+                )
+                item.setData(Qt.ItemDataRole.UserRole, node.id)
+                self._results.addItem(item)
+
+        if self._results.count() == 0:
+            self._results.addItem(tr("(нет совпадений)"))
+
+    def _jump_to_item(self, item: QListWidgetItem):
+        node_id = item.data(Qt.ItemDataRole.UserRole)
+        if not node_id or not self._scene:
+            return
+        from constructor.items import AgentNodeItem
+        for scene_item in self._scene.items():
+            if isinstance(scene_item, AgentNodeItem) and scene_item.node.id == node_id:
+                # Центрировать вью на ноде
+                views = self._scene.views()
+                if views:
+                    views[0].centerOn(scene_item)
+                    scene_item.setSelected(True)
+                self.accept()
+                return
 
 class AgentConstructorWindow(QMainWindow):
     """
@@ -1315,6 +1409,83 @@ class AgentConstructorWindow(QMainWindow):
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
     
+    def _open_project_search(self):
+        """Открыть диалог поиска по проекту (Ctrl+F)."""
+        dlg = ProjectSearchDialog(self._workflow, self._scene, self)
+        dlg.exec()
+    
+    def _open_good_end_search(self):
+        """Диалог поиска успешных выходов (нод без исходящих рёбер или GOOD_END)."""
+        from services.agent_models import AgentType
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("✅ Поиск успешных выходов"))
+        dlg.setMinimumSize(460, 320)
+        lay = QVBoxLayout(dlg)
+
+        info = QLabel(tr(
+            "Список нод, которые приведут к успешному завершению потока: "
+            "GOOD_END-ноды и ноды без исходящих соединений."
+        ))
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #9ECE6A; font-size: 11px; padding-bottom: 6px;")
+        lay.addWidget(info)
+
+        search_row = QHBoxLayout()
+        search_edit = QLineEdit()
+        search_edit.setPlaceholderText(tr("Быстрый поиск по имени / типу..."))
+        search_row.addWidget(search_edit)
+        lay.addLayout(search_row)
+
+        lst = QListWidget()
+        lay.addWidget(lst)
+
+        from constructor.constants import _AGENT_ICONS
+
+        def _fill(query=""):
+            lst.clear()
+            nodes_with_out = {e.source_id for e in self._workflow.edges}
+            for node in self._workflow.nodes:
+                is_good_end = node.agent_type == AgentType.GOOD_END
+                is_dead_end = node.id not in nodes_with_out and node.agent_type not in (
+                    AgentType.NOTE, AgentType.PROJECT_START
+                )
+                if not (is_good_end or is_dead_end):
+                    continue
+                label = (
+                    f"{'✅' if is_good_end else '⚠️'} "
+                    f"[{node.id}]  {node.name}  ({node.agent_type.value})"
+                )
+                if query and query.lower() not in label.lower():
+                    continue
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, node.id)
+                lst.addItem(item)
+            if lst.count() == 0:
+                lst.addItem(tr("(нет найдено)"))
+
+        _fill()
+        search_edit.textChanged.connect(_fill)
+
+        def _jump(item):
+            node_id = item.data(Qt.ItemDataRole.UserRole)
+            if not node_id:
+                return
+            from constructor.items import AgentNodeItem
+            for si in self._scene.items():
+                if isinstance(si, AgentNodeItem) and si.node.id == node_id:
+                    views = self._scene.views()
+                    if views:
+                        views[0].centerOn(si)
+                    si.setSelected(True)
+            dlg.accept()
+
+        lst.itemDoubleClicked.connect(_jump)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        dlg.exec()
+    
     def _on_working_dir_changed(self, text: str):
         """Обработчик изменения рабочей папки в поле ввода."""
         # Сохраняем в текущий ProjectTab
@@ -1383,6 +1554,7 @@ class AgentConstructorWindow(QMainWindow):
             AgentType.LOOP:            tr("🔁 Цикл (Loop)"),
             AgentType.VARIABLE_SET:    tr("📝 Установить переменную"),
             AgentType.HTTP_REQUEST:    tr("🌐 HTTP-запрос"),
+            AgentType.PROJECT_IN_PROJECT: tr("📦 Проект в проекте"),
             AgentType.DELAY:           tr("⏳ Задержка"),
             AgentType.LOG_MESSAGE:     tr("📋 Запись в лог"),
             AgentType.NOTIFICATION:    tr("🔔 Уведомление"),
@@ -1492,15 +1664,49 @@ class AgentConstructorWindow(QMainWindow):
         return super().eventFilter(obj, event)
     
     def _update_project_variable(self, name: str, value: str):
-        """Callback для runtime — обновляет переменную проекта и UI"""
-        # Обновляем в данных
-        if self._workflow and name in self._workflow.project_variables:
+        """Callback для runtime — обновляет переменную проекта и UI.
+        Если переменной ещё нет — создаёт и сохраняет (авто-переменные от PROGRAM_OPEN и др.).
+        Также синхронизирует глобальные переменные в metadata."""
+        if not self._workflow or name.startswith('_'):
+            return
+
+        # ── Обновляем/создаём в project_variables ─────────────────────────────
+        if name in self._workflow.project_variables:
             self._workflow.project_variables[name]['value'] = str(value)
-        
-        # Обновляем UI таблицы
+        else:
+            self._workflow.project_variables[name] = {
+                'value':       str(value),
+                'type':        'string',
+                'default':     str(value),
+                'description': '🤖 auto',
+            }
+
+        # ── Синхронизируем в metadata['global_variables'] если это глоб. переменная ──
+        try:
+            _meta = getattr(self._workflow, 'metadata', None)
+            if isinstance(_meta, dict) and 'global_variables' in _meta:
+                for _gv in _meta['global_variables']:
+                    if isinstance(_gv, dict) and _gv.get('name', '').strip() == name:
+                        _gv['value'] = str(value)
+                        # Обновляем UI таблицы глобальных переменных
+                        if hasattr(self, '_vars_panel') and hasattr(self._vars_panel, '_global_var_table'):
+                            _tbl = self._vars_panel._global_var_table
+                            _tbl.blockSignals(True)
+                            for _r in range(_tbl.rowCount()):
+                                _ni = _tbl.item(_r, 0)
+                                if _ni and _ni.text().strip() == name:
+                                    _vi = _tbl.item(_r, 1)
+                                    if _vi:
+                                        _vi.setText(str(value))
+                                    break
+                            _tbl.blockSignals(False)
+                        break
+        except Exception:
+            pass
+
+        # ── Обновляем UI таблицы project variables ────────────────────────────
         if hasattr(self, '_vars_panel'):
             self._vars_panel._sync_variable_to_ui(name, str(value))
-            # ═══ ФИКС: дополнительно обновляем всю таблицу для надежности ═══
             self._vars_panel._var_table.viewport().update()
     
     def _on_runtime_list_table_updated(self, kind: str, name: str, count: int):
@@ -2806,7 +3012,9 @@ class AgentConstructorWindow(QMainWindow):
                 'help': tr("Выполняет Python/Shell/Node код. Переменные: {var_name}"),
                 'fields': [
                     ('language', 'combo', tr('Язык:'), [
-                        ('Python', 'python'), ('Shell/Bash', 'shell'), ('Node.js', 'node')
+                        ('Python', 'python'), ('Shell/Bash', 'shell'), ('Node.js', 'node'),
+                        ('C++', 'cpp'), ('C#', 'csharp'), ('Java', 'java'), ('Go', 'go'), ('Ruby', 'ruby'),
+                        ('PHP', 'php'), ('PowerShell', 'powershell'), ('Batch (.bat)', 'batch'),
                     ], 'python'),
                     ('code_source', 'combo', tr('Источник:'), [
                         (tr('Код в поле User Prompt'), 'inline'), 
@@ -2907,6 +3115,7 @@ class AgentConstructorWindow(QMainWindow):
                     ('var_value', 'line', tr('Значение:'), '', tr('Значение или {другая_переменная}')),
                     ('step_value', 'spin', tr('Шаг (для inc/dec):'), (1, 10000, 1), tr('На сколько увеличить/уменьшить')),
                     ('global_scope', 'check', tr('Глобальная область видимости'), True, None),
+                    ('write_to_global', 'check', tr('🌍 Записать в глобальную переменную'), False, tr('Сохранить результат в таблице Глобальных переменных (доступно всем потокам)')),
                     ('auto_type', 'check', tr('Автоопределение типа (число/bool/строка)'), True, None),
                     ('create_if_missing', 'check', tr('Создать переменную если не существует'), True, None),
                     ('multi_set', 'text', tr('Множественная установка:'), '', tr('По строкам: имя = значение\ncount = 0\nstatus = active')),
@@ -3427,6 +3636,7 @@ class AgentConstructorWindow(QMainWindow):
                     ], 'string'),
                     ('clear_except', 'line', tr('Не очищать:'), '', tr('Для clear_all: через запятую')),
                     ('save_to_project', 'check', tr('Синхронизировать с переменными проекта'), True, tr('Обновить значение в таблице переменных проекта')),
+                    ('write_to_global', 'check', tr('🌍 Записать в глобальную переменную'), False, tr('Сохранить результат в таблице Глобальных переменных (доступно всем потокам)')),
                 ]
             },
             AgentType.RANDOM_GEN: {
@@ -3921,13 +4131,16 @@ class AgentConstructorWindow(QMainWindow):
                 ),
                 'fields': [
                     ('info_type', 'combo', tr('Что получить:'), [
-                        (tr('🌐 ID открытых браузеров'),      'browser_ids'),
-                        (tr('📃 Имена списков проекта'),      'list_names'),
-                        (tr('📊 Имена таблиц проекта'),       'table_names'),
-                        (tr('📝 Имена переменных проекта'),   'var_names'),
-                        (tr('🔧 Имена скиллов проекта'),      'skill_names'),
-                        (tr('📋 Все узлы графа (сниппеты)'), 'node_names'),
-                        (tr('🗂 Всё сразу (JSON)'),           'all'),
+                        (tr('🌐 ID открытых браузеров'),         'browser_ids'),
+                        (tr('📃 Имена списков проекта'),         'list_names'),
+                        (tr('📊 Имена таблиц проекта'),          'table_names'),
+                        (tr('📝 Имена переменных проекта'),      'var_names'),
+                        (tr('🔧 Имена скиллов проекта'),         'skill_names'),
+                        (tr('📋 Все узлы графа (сниппеты)'),    'node_names'),
+                        (tr('🖥 Открытые программы'),            'open_programs'),
+                        (tr('⚙️ Настройки проекта'),             'project_settings'),
+                        (tr('🗄 База данных проекта (JSON)'),    'project_db'),
+                        (tr('🗂 Всё сразу (JSON)'),              'all'),
                     ], 'browser_ids'),
                     ('result_var', 'line', tr('Результат →:'), '{project_info}',
                      tr('Переменная для результата. Для browser_ids → "id1,id2"; для all → JSON')),
@@ -3945,6 +4158,121 @@ class AgentConstructorWindow(QMainWindow):
                     ], 'csv'),
                 ],
             },
+            AgentType.BROWSER_PARSE: {
+                'title': tr("🕸️ Browser Parse — парсинг текста из браузера"),
+                'help': tr(
+                    "Извлекает текст с веб-страницы. Поддерживает ручной выбор элемента "
+                    "(клик по нужному блоку), CSS/XPath-селектор и универсальный AI-парсер. "
+                    "Результат → переменная или список проекта."
+                ),
+                'fields': [
+                    ('browser_instance_var', 'line', tr('Инстанс браузера ({var}):'), '{browser_id}',
+                     tr('Переменная с ID открытого браузера')),
+                    ('pick_mode', 'combo', tr('Режим выбора элемента:'), [
+                        (tr('🖱 Интерактивный выбор (клик по элементу)'), 'interactive'),
+                        (tr('🔤 CSS-селектор'),                           'css'),
+                        (tr('📍 XPath'),                                  'xpath'),
+                        (tr('📄 Весь текст страницы'),                    'page_text'),
+                        (tr('📊 Таблицы на странице'),                    'tables'),
+                        (tr('🤖 Универсальный AI-парсер'),                'ai_universal'),
+                    ], 'interactive'),
+                    ('css_selector', 'line', tr('CSS-селектор:'), '',
+                     tr('Пример: div.price, #content h1, .article-body p')),
+                    ('xpath_selector', 'line', tr('XPath:'), '',
+                     tr('Пример: //div[@class="price"]//span')),
+                    ('ai_prompt', 'text', tr('Задача для AI-парсера:'), '',
+                     tr('Опишите что нужно найти: "цена товара", "заголовок статьи". '
+                        'Работает даже при изменении структуры сайта.')),
+                    ('parse_type', 'combo', tr('Что брать:'), [
+                        (tr('Первый найденный'),     'first'),
+                        (tr('Все совпадения'),        'all_matches'),
+                        (tr('Текст + атрибуты'),     'full'),
+                    ], 'first'),
+                    ('picked_selector', '_browser_elem_picker', tr('🖱 Выбрать элемент на странице:'), '',
+                     tr('Нажмите "Открыть пикер", кликните по нужному тексту на скриншоте браузера — CSS-селектор сохранится автоматически')),
+                    ('fallback_ai', 'check', tr('Фолбэк: AI-парсер если элемент не найден'), True,
+                     tr('При изменении структуры сайта попытается найти нужные данные через AI')),
+                    ('save_to', 'combo', tr('Сохранить в:'), [
+                        (tr('📝 Переменную'),    'variable'),
+                        (tr('📃 Список'),         'list'),
+                        (tr('📊 Таблицу'),        'table'),
+                    ], 'variable'),
+                    ('result_var', 'line', tr('→ Переменная:'), '{parsed_text}',
+                     tr('Имя переменной для результата')),
+                    ('result_list', 'line', tr('→ Список:'), '',
+                     tr('Имя списка (для "все совпадения")')),
+                    ('result_table', 'line', tr('→ Таблица:'), '',
+                     tr('Имя таблицы (для таблиц на странице)')),
+                    ('wait_load', 'spin', tr('Ожидание загрузки (мс):'), (0, 30000, 1500),
+                     tr('Подождать N мс перед парсингом (для динамического контента)')),
+                    ('on_error', 'combo', tr('При ошибке:'), [
+                        (tr('Остановить'), 'stop'),
+                        (tr('Продолжить'), 'continue'),
+                        (tr('Пустая строка'), 'empty'),
+                    ], 'empty'),
+                ],
+            },
+            AgentType.PROGRAM_INSPECTOR: {
+                'title': tr("🔬 Program Inspector — инспекция открытой программы"),
+                'help': tr(
+                    "Читает все элементы открытой программы: кнопки, текстовые поля, "
+                    "лейблы, чекбоксы, координаты. Полная автоматизация без скриншотов. "
+                    "Результат → переменные, списки или таблица."
+                ),
+                'fields': [
+                    ('program_source', 'combo', tr('Источник окна:'), [
+                        (tr('По переменной HWND'),          'hwnd_var'),
+                        (tr('По заголовку окна'),            'window_title'),
+                        (tr('По PID процесса'),              'pid_var'),
+                        (tr('Активное окно'),                'active_window'),
+                    ], 'hwnd_var'),
+                    ('hwnd_var', 'line', tr('Переменная HWND:'), '{program_hwnd}',
+                     tr('Переменная содержащая handle окна')),
+                    ('window_title_filter', 'line', tr('Заголовок окна (поиск):'), '',
+                     tr('Часть заголовка для поиска. Пример: Notepad, Chrome')),
+                    ('pid_var', 'line', tr('Переменная PID:'), '{program_pid}',
+                     tr('Переменная содержащая PID процесса')),
+                    ('inspect_mode', 'combo', tr('Что читать:'), [
+                        (tr('🔬 Полный дамп всех элементов'),     'full_dump'),
+                        (tr('🔘 Только кнопки'),                   'buttons_only'),
+                        (tr('📝 Только текстовые поля'),           'text_fields'),
+                        (tr('🏷 Только лейблы и статичный текст'), 'labels_only'),
+                        (tr('☑ Чекбоксы и радиокнопки'),          'checkboxes'),
+                        (tr('📋 Меню и пункты меню'),              'menus'),
+                        (tr('🪟 Список всех дочерних окон'),       'child_windows'),
+                        (tr('📊 В виде таблицы элементов'),        'table_view'),
+                    ], 'full_dump'),
+                    ('class_filter', 'line', tr('Фильтр по классу (Win32):'), '',
+                     tr('Пример: Button, Edit, Static. Пусто = все классы')),
+                    ('include_coords', 'check', tr('Сохранять координаты (x, y, w, h)'), True,
+                     tr('Добавить позицию и размер каждого элемента')),
+                    ('include_state', 'check', tr('Сохранять состояние (enabled/checked)'), True,
+                     tr('Добавить флаги: активен, отмечен, видим')),
+                    ('include_text', 'check', tr('Читать текст элементов'), True,
+                     tr('Прочитать содержимое каждого контрола через WinAPI')),
+                    ('depth_limit', 'spin', tr('Глубина дерева элементов:'), (1, 20, 5),
+                     tr('Сколько уровней вложенности читать. Больше = медленнее.')),
+                    ('use_ai_interpret', 'check', tr('AI-интерпретация дампа'), False,
+                     tr('Отправить дамп в AI для создания удобной структуры')),
+                    ('ai_task', 'line', tr('Задача для AI:'), '',
+                     tr('Что нужно найти/сделать с данными. Пример: "координаты кнопки ОК"')),
+                    ('save_to', 'combo', tr('Сохранить в:'), [
+                        (tr('📝 Переменную (JSON)'), 'variable'),
+                        (tr('📊 Таблицу'),            'table'),
+                        (tr('📃 Список'),             'list'),
+                    ], 'table'),
+                    ('result_var', 'line', tr('→ Переменная (JSON):'), '{program_dump}',
+                     tr('JSON-строка со всеми элементами')),
+                    ('result_table', 'line', tr('→ Таблица:'), 'program_elements',
+                     tr('Таблица: class | text | x | y | w | h | enabled | checked')),
+                    ('result_list', 'line', tr('→ Список текстов:'), '',
+                     tr('Просто список текстовых значений всех найденных элементов')),
+                    ('on_error', 'combo', tr('При ошибке:'), [
+                        (tr('Остановить'), 'stop'),
+                        (tr('Продолжить'), 'continue'),
+                    ], 'stop'),
+                ],
+            },
             AgentType.PROGRAM_OPEN: {
                 'title': tr("🖥 PROGRAM OPEN — открыть программу"),
                 'help': tr("Запускает внешнюю программу, управляет окном. Аналог Browser Launch для программ."),
@@ -3957,6 +4285,8 @@ class AgentConstructorWindow(QMainWindow):
                      tr('Рабочая директория программы')),
                     ('wait_ready', 'spin', tr('Ожидание готовности (сек):'), (0, 120, 3),
                      tr('Подождать N секунд пока окно появится')),
+                    ('wait_splash', 'spin', tr('Ожидание основного окна (сек):'), (0, 60, 0),
+                     tr('Для программ с заставкой/загрузчиком: ждать главное окно после закрытия сплеш-экрана. 0 = отключено')),
                     ('window_title', 'line', tr('Заголовок окна (поиск):'), '',
                      tr('Часть заголовка для поиска окна. Пусто = автопоиск')),
                     ('hide_to_tray', 'check', tr('Свернуть в трей'), False,
@@ -3968,6 +4298,8 @@ class AgentConstructorWindow(QMainWindow):
                      tr('Сохранить PID процесса в переменную')),
                     ('hwnd_var', 'line', tr('Переменная HWND:'), '{program_hwnd}',
                      tr('Сохранить handle окна в переменную')),
+                    ('single_instance', 'check', tr('Single Instance (не дублировать)'), False,
+                     tr('Если программа уже запущена — не запускать повторно, вернуть существующий HWND')),
                     ('on_error', 'combo', tr('При ошибке:'), [
                         (tr('Остановить'), 'stop'),
                         (tr('Продолжить'), 'continue'),
@@ -4140,6 +4472,25 @@ class AgentConstructorWindow(QMainWindow):
             },
         }
         
+        SNIPPET_SCHEMA[AgentType.PROJECT_IN_PROJECT] = {
+            'title': tr("📦 Проект в проекте"),
+            'help': tr(
+                "Запускает внешний проект как подпроект. Переменные передаются "
+                "туда и обратно по заданному сопоставлению."
+            ),
+            'fields': [
+                ('project_path', 'file_browse', tr('Путь к проекту (.json):'), '',
+                 tr('Sherlock Projects (*.json);;All Files (*)')),
+                ('match_same_names', 'check', tr('Сопоставлять переменные с одинаковыми именами'), True, ''),
+                ('no_return_on_fail', 'check', tr('Не возвращать значения при неудаче'), False,
+                 tr('Если включено — изменения переменных во вложенном проекте игнорируются при ошибке')),
+                ('pass_context', 'check', tr('Передавать project.Context (C# объекты)'), False, ''),
+                ('var_map', 'text', tr('Сопоставление переменных (по одному на строку):'),
+                 tr('# Формат: внешняя_переменная = внутренняя_переменная\n# Пример:\n# login = user_login\n# password = user_pass'),
+                 tr('Ручное сопоставление имеет приоритет над "одинаковые имена"')),
+            ],
+        }
+
         schema = SNIPPET_SCHEMA.get(agent_type, {
             'title': f"⚙️ {agent_type.value}",
             'help': tr("Настройки сниппета"),
@@ -4305,6 +4656,13 @@ class AgentConstructorWindow(QMainWindow):
                                 _was_loading = getattr(_self, '_snippet_loading', False)
                                 _self._snippet_loading = False
                                 _field.setText(name)
+                                # Дублируем имя в поле "list_var"/"table_var" — именно его читает runtime
+                                _companion_key = 'list_var' if _k == 'project_list_name' else 'table_var'
+                                _companion_w = getattr(_self, '_snippet_widgets', {}).get(_companion_key)
+                                if _companion_w and hasattr(_companion_w, 'setText'):
+                                    _companion_w.blockSignals(True)
+                                    _companion_w.setText(name)
+                                    _companion_w.blockSignals(False)
                                 if hasattr(_self, '_flush_snippet_config_to_node'):
                                     _self._flush_snippet_config_to_node()
                                 _self._snippet_loading = _was_loading
@@ -4632,6 +4990,632 @@ class AgentConstructorWindow(QMainWindow):
                 if tooltip:
                     container.setToolTip(tooltip)
                 continue
+            
+            elif ftype == '_browser_elem_picker':
+                # ─── Виджет выбора элемента страницы для Browser Parse ───
+                container = QWidget()
+                col_layout = QVBoxLayout(container)
+                col_layout.setContentsMargins(0, 0, 0, 0)
+                col_layout.setSpacing(4)
+
+                # Отображение текущего селектора
+                selector_display = QLabel(tr("Элемент не выбран"))
+                selector_display.setWordWrap(True)
+                selector_display.setStyleSheet(
+                    "border: 1px dashed #00D4FF; border-radius: 4px; "
+                    "background: #0a1520; color: #7AA2F7; font-size: 10px; "
+                    "padding: 4px; min-height: 28px;"
+                )
+                selector_display.setToolTip("CSS-селектор выбранного элемента")
+
+                # Скрытое поле хранения
+                hidden_sel = QLineEdit(str(default) if default else '')
+                hidden_sel.setVisible(False)
+                hidden_sel.textChanged.connect(self._on_snippet_widget_changed)
+
+                def _refresh_selector_display(sel_text, lbl=selector_display):
+                    if sel_text and sel_text.strip():
+                        lbl.setText(f"✅ {sel_text[:120]}")
+                        lbl.setStyleSheet(
+                            "border: 1px solid #9ECE6A; border-radius: 4px; "
+                            "background: #0a1a0a; color: #9ECE6A; font-size: 10px; padding: 4px;"
+                        )
+                    else:
+                        lbl.setText(tr("Элемент не выбран"))
+                        lbl.setStyleSheet(
+                            "border: 1px dashed #00D4FF; border-radius: 4px; "
+                            "background: #0a1520; color: #7AA2F7; font-size: 10px; padding: 4px;"
+                        )
+                hidden_sel.textChanged.connect(_refresh_selector_display)
+                _refresh_selector_display(hidden_sel.text())
+
+                # Превью текста элемента
+                text_preview = QLabel("")
+                text_preview.setWordWrap(True)
+                text_preview.setStyleSheet(
+                    "color: #A9B1D6; font-size: 10px; padding: 2px; font-style: italic;"
+                )
+                text_preview.setMaximumHeight(36)
+
+                btn_row = QHBoxLayout()
+                btn_row.setSpacing(4)
+
+                btn_pick = QPushButton(tr("🖱 Открыть пикер"))
+                btn_pick.setToolTip(
+                    tr("Сделать скриншот текущей страницы браузера и кликнуть по нужному элементу — "
+                       "CSS-селектор и текст сохранятся автоматически")
+                )
+                btn_pick.setStyleSheet(
+                    "QPushButton { background: #0a1a2a; color: #00D4FF; "
+                    "border: 1px solid #00D4FF; border-radius: 4px; padding: 4px 10px; font-size: 11px; }"
+                    "QPushButton:hover { background: #00D4FF; color: #000; }"
+                )
+
+                btn_clear_sel = QPushButton("🗑")
+                btn_clear_sel.setFixedWidth(28)
+                btn_clear_sel.setToolTip(tr("Очистить выбранный элемент"))
+
+                def _open_elem_picker(sel_field=hidden_sel, txt_prev=text_preview):
+                    """Скриншот браузера → клик по элементу → JS получает CSS-селектор."""
+                    from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel as _QLabel, QPushButton as _QPushButton
+                    from PyQt6.QtGui import QPixmap, QCursor
+                    from PyQt6.QtCore import Qt as _Qt, QPoint
+
+                    raw_b64 = None
+                    inst = None
+                    try:
+                        from constructor.browser_module import BrowserManager
+                        mgr = self._browser_manager if hasattr(self, '_browser_manager') else BrowserManager.get()
+                        all_inst = {}
+                        _tab = self._current_project_tab() if hasattr(self, '_current_project_tab') else None
+                        _pbm = getattr(_tab, 'browser_manager', None) if _tab else None
+                        if _pbm:
+                            all_inst.update(_pbm.all_instances())
+                        if mgr:
+                            all_inst.update(mgr.all_instances())
+                        # Ищем по переменной browser_instance_var из соседнего поля
+                        _iid = ''
+                        if hasattr(self, '_snippet_widgets'):
+                            _iid_w = self._snippet_widgets.get('browser_instance_var')
+                            if _iid_w and hasattr(_iid_w, 'text'):
+                                _iid = _iid_w.text().strip().strip('{}')
+                        inst = all_inst.get(_iid) or next(
+                            (i for i in all_inst.values() if i.is_running), None
+                        )
+                        if inst:
+                            raw_b64 = inst.get_screenshot_base64()
+                    except Exception:
+                        import traceback; traceback.print_exc()
+
+                    if not raw_b64:
+                        QMessageBox.warning(self, tr("Ошибка"),
+                            tr("Не удалось сделать скриншот.\n"
+                               "Убедитесь что браузер запущен (BROWSER_LAUNCH) и открыта нужная страница."))
+                        return
+
+                    # ── Получить полный скриншот страницы через resize-trick ──
+                    full_b64 = raw_b64  # фолбэк — viewport
+                    page_scroll_y = 0
+                    try:
+                        drv_for_full = getattr(inst, '_driver', None)
+                        if drv_for_full:
+                            orig_size = drv_for_full.get_window_size()
+                            full_h = drv_for_full.execute_script(
+                                "return Math.max(document.body.scrollHeight,"
+                                " document.documentElement.scrollHeight, window.innerHeight);"
+                            ) or orig_size['height']
+                            full_w = drv_for_full.execute_script(
+                                "return Math.max(document.body.scrollWidth,"
+                                " document.documentElement.scrollWidth, window.innerWidth);"
+                            ) or orig_size['width']
+                            # Ограничиваем разумным максимумом
+                            full_h = min(int(full_h), 16000)
+                            full_w = min(int(full_w), 4000)
+                            if full_h > orig_size['height'] + 100:
+                                drv_for_full.set_window_size(full_w, full_h)
+                                import time; time.sleep(0.4)
+                                fb = drv_for_full.get_screenshot_as_base64()
+                                drv_for_full.set_window_size(orig_size['width'], orig_size['height'])
+                                if fb:
+                                    full_b64 = fb
+                    except Exception:
+                        pass
+
+                    # ── Диалог с прокрукой, выделением и JS-пикером ──────────
+                    class _ElemPickerDialog(QDialog):
+                        def __init__(self, b64_png, browser_inst, parent=None):
+                            super().__init__(parent)
+                            self._is_dragging = False
+                            self.setWindowTitle(tr("🖱 Выбор элемента — кликните по нужному тексту на странице"))
+                            self.setModal(True)
+                            self.setMinimumSize(900, 650)
+                            self._inst = browser_inst
+                            self._selector = ''
+                            self._elem_text = ''
+                            self._context_before = ''
+                            self._context_after  = ''
+                            self._img_scale = 1.0
+                            self._highlight_rect = None
+
+                            import base64 as _b64
+                            data = _b64.b64decode(b64_png)
+                            self._orig_pm = QPixmap()
+                            self._orig_pm.loadFromData(data)
+                            self._orig_w = self._orig_pm.width()
+                            self._orig_h = self._orig_pm.height()
+
+                            # Масштаб: вписать ширину в 900px, высоту не ограничиваем
+                            display_w = 900
+                            self._img_scale = display_w / max(self._orig_w, 1)
+                            disp_h = int(self._orig_h * self._img_scale)
+                            self._disp_pm = self._orig_pm.scaled(
+                                display_w, disp_h,
+                                _Qt.AspectRatioMode.IgnoreAspectRatio,
+                                _Qt.TransformationMode.SmoothTransformation
+                            )
+
+                            root = QVBoxLayout(self)
+                            root.setContentsMargins(6, 6, 6, 6)
+                            root.setSpacing(4)
+
+                            # Заголовок
+                            hint = _QLabel(
+                                tr("👆 Зажмите ЛКМ и выделите область с нужным текстом, "
+                                   "или ПКМ по тексту → «Использовать этот элемент». "
+                                   "Жёлтая рамка = найденный элемент.")
+                            )
+                            hint.setStyleSheet(
+                                "color:#E0AF68; font-size:11px; "
+                                "background:#1a1508; padding:4px; border-radius:4px;"
+                            )
+                            hint.setWordWrap(True)
+                            root.addWidget(hint)
+
+                            # Scrollable image
+                            from PyQt6.QtWidgets import QScrollArea as _SA
+                            self._scroll = _SA()
+                            self._scroll.setWidgetResizable(False)
+                            self._scroll.setHorizontalScrollBarPolicy(_Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+                            self._scroll.setVerticalScrollBarPolicy(_Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+                            self._scroll.setStyleSheet("background:#0d0f18; border:1px solid #2E3148;")
+
+                            self._canvas = _QLabel()
+                            self._canvas.setPixmap(self._disp_pm)
+                            self._canvas.setFixedSize(display_w, disp_h)
+                            self._canvas.setCursor(QCursor(_Qt.CursorShape.CrossCursor))
+                            self._canvas.setMouseTracking(True)
+                            self._canvas.mousePressEvent   = self._on_mouse_press
+                            self._canvas.mouseMoveEvent    = self._on_mouse_move
+                            self._canvas.mouseReleaseEvent = self._on_mouse_release
+                            self._scroll.setWidget(self._canvas)
+                            root.addWidget(self._scroll, stretch=1)
+
+                            # Результат
+                            self._result_lbl = _QLabel(tr("⬆ Кликните по элементу выше"))
+                            self._result_lbl.setStyleSheet(
+                                "color:#7AA2F7; font-size:10px; padding:4px; "
+                                "background:#0d1520; border-radius:4px; min-height:36px;"
+                            )
+                            self._result_lbl.setWordWrap(True)
+                            root.addWidget(self._result_lbl)
+
+                            # Кнопки
+                            btn_row = QHBoxLayout()
+                            btn_refresh = _QPushButton(tr("🔄 Обновить скриншот"))
+                            btn_refresh.setToolTip(tr(
+                                "Сделать новый скриншот (если прокрутили страницу в браузере)"
+                            ))
+                            btn_refresh.clicked.connect(self._refresh)
+                            btn_ok = _QPushButton(tr("✅ Применить"))
+                            btn_ok.clicked.connect(self.accept)
+                            btn_cancel = _QPushButton(tr("❌ Отмена"))
+                            btn_cancel.clicked.connect(self.reject)
+                            for b in (btn_refresh, btn_ok, btn_cancel):
+                                b.setStyleSheet(
+                                    "QPushButton{background:#1a1d2e;color:#CDD6F4;"
+                                    "border:1px solid #2E3148;border-radius:4px;padding:5px 12px;}"
+                                    "QPushButton:hover{border-color:#7AA2F7;color:#7AA2F7;}"
+                                )
+                            btn_row.addWidget(btn_refresh)
+                            btn_row.addStretch()
+                            btn_row.addWidget(btn_ok)
+                            btn_row.addWidget(btn_cancel)
+                            root.addLayout(btn_row)
+
+                            self.resize(940, 700)
+
+                        def _to_page(self, widget_x, widget_y):
+                            """Координаты виджета → абсолютные координаты страницы."""
+                            return int(widget_x / self._img_scale), int(widget_y / self._img_scale)
+
+                        # ── Мышь: выделение области (ЛКМ) и ПКМ-меню ───────────
+                        def _on_mouse_press(self, ev):
+                            if ev.button() == _Qt.MouseButton.LeftButton:
+                                self._sel_start   = ev.pos()
+                                self._sel_end     = ev.pos()
+                                self._is_dragging = True
+                                self._redraw_highlight()
+                            elif ev.button() == _Qt.MouseButton.RightButton:
+                                px, py = self._to_page(ev.pos().x(), ev.pos().y())
+                                self._show_context_menu(ev.globalPosition().toPoint(), px, py)
+
+                        def _on_mouse_move(self, ev):
+                            if self._is_dragging:
+                                self._sel_end = ev.pos()
+                                self._redraw_highlight()
+
+                        def _on_mouse_release(self, ev):
+                            if ev.button() == _Qt.MouseButton.LeftButton and self._is_dragging:
+                                self._is_dragging = False
+                                self._sel_end = ev.pos()
+                                if self._sel_start and self._sel_end:
+                                    px1, py1 = self._to_page(
+                                        min(self._sel_start.x(), self._sel_end.x()),
+                                        min(self._sel_start.y(), self._sel_end.y()))
+                                    px2, py2 = self._to_page(
+                                        max(self._sel_start.x(), self._sel_end.x()),
+                                        max(self._sel_start.y(), self._sel_end.y()))
+                                    # Если просто клик (а не drag) — добавляем зону ±12px
+                                    if abs(px2 - px1) < 4:
+                                        px1, px2 = px1 - 12, px2 + 12
+                                    if abs(py2 - py1) < 4:
+                                        py1, py2 = py1 - 12, py2 + 12
+                                    self._find_element_in_rect(px1, py1, px2, py2)
+
+                        def _show_context_menu(self, global_pos, px, py):
+                            from PyQt6.QtWidgets import QMenu as _QMenu
+                            menu = _QMenu(self)
+                            menu.setStyleSheet(
+                                "QMenu{background:#1a1d2e;color:#CDD6F4;border:1px solid #2E3148;}"
+                                "QMenu::item:selected{background:#2E3148;}"
+                            )
+                            act = menu.addAction("🖱 Использовать этот элемент для парсинга")
+                            chosen = menu.exec(global_pos)
+                            if chosen == act:
+                                self._find_element_in_rect(px - 15, py - 15, px + 15, py + 15)
+
+                        def _find_element_in_rect(self, px1, py1, px2, py2):
+                            """JS: найти элемент в прямоугольнике страницы, извлечь селектор и контекст."""
+                            if not self._inst:
+                                return
+                            JS = """(function(px1, py1, px2, py2) {
+try {
+    var cx = (px1 + px2) / 2, cy = (py1 + py2) / 2;
+    var maxSX = Math.max(0, document.documentElement.scrollWidth  - window.innerWidth);
+    var maxSY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    window.scrollTo(
+        Math.min(maxSX, Math.max(0, cx - window.innerWidth  / 2)),
+        Math.min(maxSY, Math.max(0, cy - window.innerHeight / 2))
+    );
+    var sx = window.scrollX, sy = window.scrollY;
+    function vpx(p){ return p - sx; }
+    function vpy(p){ return p - sy; }
+
+    // Сбор кандидатов по сетке точек внутри прямоугольника
+    var candidates = [], seen = new Set();
+    var steps = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
+    var W = px2 - px1, H = py2 - py1;
+    for (var i = 0; i < steps.length; i++) {
+        for (var j = 0; j < steps.length; j++) {
+            var vx = vpx(px1 + W * steps[j]);
+            var vy = vpy(py1 + H * steps[i]);
+            var els = document.elementsFromPoint ? document.elementsFromPoint(vx, vy) : [];
+            if (!els.length) { var e0 = document.elementFromPoint(vx, vy); if (e0) els = [e0]; }
+            for (var k = 0; k < Math.min(els.length, 10); k++) {
+                var e = els[k];
+                if (!e || seen.has(e) || e === document.body || e === document.documentElement) continue;
+                seen.add(e);
+                var t = (e.innerText || e.textContent || '').trim();
+                if (t.length > 0 && t.length <= 3000) candidates.push(e);
+            }
+        }
+    }
+    // Caret approach как высокоприоритетный кандидат
+    try {
+        var midVX = vpx(cx), midVY = vpy(cy);
+        var rng = document.caretRangeFromPoint
+            ? document.caretRangeFromPoint(midVX, midVY)
+            : (document.caretPositionFromPoint
+                ? (function(){ var p=document.caretPositionFromPoint(midVX,midVY);
+                               return p?{startContainer:p.offsetNode}:null; })()
+                : null);
+        if (rng && rng.startContainer) {
+            var leaf = rng.startContainer.nodeType===3
+                ? rng.startContainer.parentElement : rng.startContainer;
+            if (leaf && !seen.has(leaf)) { seen.add(leaf); candidates.unshift(leaf); }
+        }
+    } catch(ce){}
+
+    if (!candidates.length)
+        return JSON.stringify({sel:'',txt:'',cb:'',ca:'',bx:0,by:0,bw:0,bh:0,dbg:'no_candidates'});
+
+    // Оценка: лучший кандидат = максимальное перекрытие bbox с выделением
+    function overlap(r, ax1,ay1,ax2,ay2) {
+        var ex1=r.left+sx, ey1=r.top+sy, ex2=ex1+r.width, ey2=ey1+r.height;
+        var ix=Math.max(0,Math.min(ex2,ax2)-Math.max(ex1,ax1));
+        var iy=Math.max(0,Math.min(ey2,ay2)-Math.max(ey1,ay1));
+        var iA=ix*iy, sA=(ax2-ax1)*(ay2-ay1), eA=r.width*r.height;
+        if (!sA||!eA) return 0;
+        return iA / Math.min(sA, eA);
+    }
+    var best=null, bestScore=-1;
+    for (var ci=0; ci<candidates.length; ci++) {
+        var el=candidates[ci];
+        try {
+            var r=el.getBoundingClientRect();
+            if (r.width<1||r.height<1) continue;
+            var score = overlap(r, px1,py1,px2,py2);
+            // Бонус: листовые элементы с прямым текстом (не контейнеры)
+            var dt=''; for(var ni=0;ni<el.childNodes.length;ni++){
+                if(el.childNodes[ni].nodeType===3) dt+=el.childNodes[ni].textContent||'';
+            }
+            if (dt.trim().length>0) score+=0.4;
+            var ft=(el.innerText||el.textContent||'').trim();
+            if (ft.length<300) score+=0.15;
+            if (ci===0) score+=0.25;  // caret-кандидат приоритетнее
+            if (score>bestScore){ best=el; bestScore=score; }
+        } catch(e){}
+    }
+    if (!best) best=candidates[0];
+
+    function getText(e){
+        var t='';
+        try{t=(e.innerText||'').trim();}catch(x){}
+        if(!t) try{t=(e.textContent||'').trim();}catch(x){}
+        if(!t) try{t=e.value||'';}catch(x){}
+        if(!t) try{t=e.getAttribute('alt')||e.getAttribute('title')||'';}catch(x){}
+        return t.substring(0,300);
+    }
+
+    function bestSelector(e){
+        try{if(e.id) return '#'+CSS.escape(e.id);}catch(x){}
+        try{
+            var attrs=['data-testid','data-id','name','aria-label','data-value','data-key'];
+            for(var i=0;i<attrs.length;i++){
+                var v=e.getAttribute(attrs[i]);
+                if(v&&v.length<120) return e.tagName.toLowerCase()+'['+attrs[i]+'="'+v+'"]';
+            }
+        }catch(x){}
+        try{
+            var uniq=[];
+            if(e.classList){
+                for(var j=0;j<e.classList.length;j++){
+                    var c=e.classList[j];
+                    try{if(document.querySelectorAll('.'+CSS.escape(c)).length===1) uniq.push(c);}catch(x){}
+                }
+            }
+            if(uniq.length) return e.tagName.toLowerCase()+'.'+uniq[0];
+        }catch(x){}
+        // Путь из 4 уровней (устойчивее одиночного nth-child)
+        try{
+            var path=[], node=e;
+            for(var d=0;d<4&&node&&node!==document.body;d++){
+                var tag=node.tagName.toLowerCase();
+                var par=node.parentNode;
+                if(par){
+                    var sibs=Array.prototype.filter.call(par.children,function(c){return c.tagName===node.tagName;});
+                    if(sibs.length>1) tag+=':nth-of-type('+(sibs.indexOf(node)+1)+')';
+                }
+                path.unshift(tag); node=node.parentNode;
+            }
+            return path.join(' > ');
+        }catch(x){}
+        return e.tagName.toLowerCase();
+    }
+
+    // Контекст: текст до и после целевого текста в родительском контейнере
+    function getContext(el, targetTxt){
+        if(!targetTxt) return {before:'',after:''};
+        try{
+            var par=el.parentElement||el;
+            for(var d=0;d<3;d++){
+                var pt=(par.innerText||par.textContent||'').trim();
+                if(pt.length>targetTxt.length+15) break;
+                if(par.parentElement) par=par.parentElement;
+            }
+            var pTxt=(par.innerText||par.textContent||'').replace(/\s+/g,' ').trim();
+            var key=targetTxt.substring(0,Math.min(targetTxt.length,80)).replace(/\s+/g,' ');
+            var idx=pTxt.indexOf(key);
+            if(idx<0) return {before:'',after:''};
+            var raw_before=pTxt.substring(Math.max(0,idx-60),idx).trim();
+            var raw_after =pTxt.substring(idx+key.length, idx+key.length+60).trim();
+            return {
+                before: raw_before.length>2 ? raw_before.substring(raw_before.length-Math.min(50,raw_before.length)) : '',
+                after:  raw_after.length>2  ? raw_after.substring(0,Math.min(50,raw_after.length)) : ''
+            };
+        }catch(e){return{before:'',after:''};}
+    }
+
+    var rr=best.getBoundingClientRect();
+    var txt=getText(best);
+    var ctx=getContext(best,txt);
+    return JSON.stringify({
+        sel: bestSelector(best),
+        txt: txt,
+        cb:  ctx.before,
+        ca:  ctx.after,
+        bx:  Math.round(rr.left+sx), by: Math.round(rr.top+sy),
+        bw:  Math.round(rr.width),   bh: Math.round(rr.height),
+        dbg: 'ok tag='+best.tagName+' score='+bestScore.toFixed(2)
+    });
+} catch(err){
+    return JSON.stringify({sel:'',txt:'',cb:'',ca:'',bx:0,by:0,bw:0,bh:0,dbg:'ERR:'+err.message});
+}
+})(arguments[0],arguments[1],arguments[2],arguments[3])"""
+                            try:
+                                drv = getattr(self._inst, '_driver', None)
+                                if not drv:
+                                    self._result_lbl.setText("❌ Selenium driver недоступен")
+                                    return
+                                raw = drv.execute_script(JS, px1, py1, px2, py2)
+                                import json as _j
+                                res = _j.loads(raw) if isinstance(raw, str) else (raw or {})
+                                self._selector       = res.get('sel', '')
+                                self._elem_text      = res.get('txt', '')
+                                self._context_before = res.get('cb', '')
+                                self._context_after  = res.get('ca', '')
+                                bx = res.get('bx', 0); by = res.get('by', 0)
+                                bw = res.get('bw', 0); bh = res.get('bh', 0)
+                                self._highlight_rect = (
+                                    int(bx * self._img_scale),
+                                    int(by * self._img_scale),
+                                    int(bw * self._img_scale),
+                                    int(bh * self._img_scale),
+                                )
+                                self._sel_start = self._sel_end = None
+                                self._redraw_highlight()
+                                if self._selector or self._elem_text:
+                                    cb_html = (f"<br><span style='color:#A9B1D6'>До: «{self._context_before[:40]}»</span>"
+                                               if self._context_before else "")
+                                    ca_html = (f"<br><span style='color:#A9B1D6'>После: «{self._context_after[:40]}»</span>"
+                                               if self._context_after else "")
+                                    self._result_lbl.setText(
+                                        f"✅ <b>{self._selector[:120]}</b><br>"
+                                        f"Текст: {self._elem_text[:100]}"
+                                        f"{cb_html}{ca_html}"
+                                    )
+                                    self._result_lbl.setStyleSheet(
+                                        "color:#9ECE6A;font-size:10px;padding:4px;"
+                                        "background:#0a1a0a;border-radius:4px;"
+                                    )
+                                else:
+                                    _dbg = res.get('dbg', '')
+                                    self._result_lbl.setText(
+                                        f"⚠ Элемент не найден — выделите область шире или попробуйте ПКМ<br>"
+                                        f"<span style='color:#565f89;font-size:9px'>{_dbg[:140]}</span>"
+                                    )
+                                    self._result_lbl.setStyleSheet(
+                                        "color:#E0AF68;font-size:10px;padding:4px;"
+                                    )
+                            except Exception as ex:
+                                self._result_lbl.setText(f"❌ JS ошибка: {ex}")
+                                self._result_lbl.setStyleSheet(
+                                    "color:#F7768E;font-size:10px;padding:4px;"
+                                )
+
+                        def _redraw_highlight(self):
+                            """Перерисовать canvas: жёлтая рамка элемента + синяя резиновая рамка."""
+                            from PyQt6.QtGui import QPainter, QPen, QColor, QBrush
+                            pm = self._disp_pm.copy()
+                            p  = QPainter(pm)
+                            # Жёлтая рамка найденного элемента
+                            if self._highlight_rect:
+                                pen = QPen(QColor("#E0AF68"))
+                                pen.setWidth(3)
+                                p.setPen(pen)
+                                p.setBrush(_Qt.BrushStyle.NoBrush)
+                                rx, ry, rw, rh = self._highlight_rect
+                                p.drawRect(rx, ry, rw, rh)
+                            # Синяя пунктирная рамка выделения
+                            if self._sel_start and self._sel_end:
+                                x1 = min(self._sel_start.x(), self._sel_end.x())
+                                y1 = min(self._sel_start.y(), self._sel_end.y())
+                                x2 = max(self._sel_start.x(), self._sel_end.x())
+                                y2 = max(self._sel_start.y(), self._sel_end.y())
+                                pen2 = QPen(QColor("#7AA2F7"))
+                                pen2.setWidth(2)
+                                pen2.setStyle(_Qt.PenStyle.DashLine)
+                                p.setPen(pen2)
+                                p.setBrush(QBrush(QColor(122, 162, 247, 35)))
+                                p.drawRect(x1, y1, x2 - x1, y2 - y1)
+                            p.end()
+                            self._canvas.setPixmap(pm)
+
+                        def _refresh(self):
+                            """Переснять скриншот (пользователь прокрутил браузер)."""
+                            try:
+                                raw = None
+                                drv = getattr(self._inst, '_driver', None)
+                                if drv:
+                                    orig_sz = drv.get_window_size()
+                                    fh = min(int(drv.execute_script(
+                                        "return document.body.scrollHeight") or orig_sz['height']), 16000)
+                                    fw = min(int(drv.execute_script(
+                                        "return document.body.scrollWidth") or orig_sz['width']), 4000)
+                                    if fh > orig_sz['height'] + 100:
+                                        drv.set_window_size(fw, fh)
+                                        import time; time.sleep(0.35)
+                                        raw = drv.get_screenshot_as_base64()
+                                        drv.set_window_size(orig_sz['width'], orig_sz['height'])
+                                    else:
+                                        raw = drv.get_screenshot_as_base64()
+                                if not raw and self._inst:
+                                    raw = self._inst.get_screenshot_base64()
+                                if raw:
+                                    import base64 as _b64
+                                    data = _b64.b64decode(raw)
+                                    self._orig_pm = QPixmap()
+                                    self._orig_pm.loadFromData(data)
+                                    self._orig_w = self._orig_pm.width()
+                                    self._orig_h = self._orig_pm.height()
+                                    dw = 900
+                                    self._img_scale = dw / max(self._orig_w, 1)
+                                    dh = int(self._orig_h * self._img_scale)
+                                    self._disp_pm = self._orig_pm.scaled(
+                                        dw, dh,
+                                        _Qt.AspectRatioMode.IgnoreAspectRatio,
+                                        _Qt.TransformationMode.SmoothTransformation
+                                    )
+                                    self._canvas.setPixmap(self._disp_pm)
+                                    self._canvas.setFixedSize(dw, dh)
+                                    self._highlight_rect = None
+                                    self._sel_start = None
+                                    self._sel_end   = None
+                                    self._is_dragging = False
+                                    self._result_lbl.setText(tr("🔄 Скриншот обновлён. Кликните по элементу."))
+                            except Exception as ex:
+                                self._result_lbl.setText(f"❌ Обновление: {ex}")
+
+                    dlg = _ElemPickerDialog(full_b64, inst, self)
+                    if dlg.exec() == QDialog.DialogCode.Accepted:
+                        selector = dlg._selector or ''
+                        sel_field.setText(selector)
+                        preview_parts = []
+                        if dlg._elem_text:
+                            preview_parts.append(f"Текст: {dlg._elem_text[:60]}")
+                        if dlg._context_before:
+                            preview_parts.append(f"До: «{dlg._context_before[:30]}»")
+                        if dlg._context_after:
+                            preview_parts.append(f"После: «{dlg._context_after[:30]}»")
+                        txt_prev.setText("  |  ".join(preview_parts))
+                        _refresh_selector_display(selector)
+                        _was_loading = getattr(self, '_snippet_loading', False)
+                        self._snippet_loading = False
+                        if hasattr(self, '_flush_snippet_config_to_node'):
+                            self._flush_snippet_config_to_node()
+                        _node = self._props._node if (hasattr(self, '_props') and self._props) else None
+                        if _node is not None:
+                            if not isinstance(getattr(_node, 'snippet_config', None), dict):
+                                _node.snippet_config = {}
+                            _node.snippet_config['target']         = selector
+                            _node.snippet_config['context_before'] = dlg._context_before
+                            _node.snippet_config['context_after']  = dlg._context_after
+                        if hasattr(self, '_mark_modified_from_props'):
+                            self._mark_modified_from_props()
+                        self._snippet_loading = _was_loading
+
+                def _clear_sel(sel_field=hidden_sel, txt_prev=text_preview):
+                    sel_field.clear()
+                    txt_prev.setText("")
+
+                btn_pick.clicked.connect(lambda checked=False: _open_elem_picker())
+                btn_clear_sel.clicked.connect(lambda checked=False: _clear_sel())
+
+                btn_row.addWidget(btn_pick)
+                btn_row.addWidget(btn_clear_sel)
+
+                col_layout.addWidget(selector_display)
+                col_layout.addWidget(text_preview)
+                col_layout.addLayout(btn_row)
+                col_layout.addWidget(hidden_sel)
+
+                _lbl = QLabel(label)
+                form.addRow(_lbl, container)
+                self._snippet_widgets[key] = hidden_sel
+                self._snippet_field_labels[key] = _lbl
+                if tooltip:
+                    container.setToolTip(tooltip)
+                continue
 
             elif ftype == '_prog_image_selector':
                 # ─── Виджет выбора шаблона для PROGRAM_CLICK_IMAGE ───
@@ -4724,13 +5708,19 @@ class AgentConstructorWindow(QMainWindow):
                         if inst_var_name and inst_var_name in ctx:
                             pid_or_hwnd = ctx[inst_var_name]
                             open_progs = ctx.get('_open_programs', {})
-                            pid_str = str(pid_or_hwnd)
-                            if pid_str in open_progs:
-                                hwnd = open_progs[pid_str].get('hwnd', 0)
-                            else:
+                            
+                            # Так как ключи больше не PID, ищем совпадение внутри значений словаря
+                            for prog_data in open_progs.values():
+                                if isinstance(prog_data, dict):
+                                    if prog_data.get('pid') == pid_or_hwnd or prog_data.get('hwnd') == pid_or_hwnd:
+                                        hwnd = prog_data.get('hwnd', 0)
+                                        break
+                                        
+                            # Если в словаре не нашли (например, в переменной уже напрямую лежит сам HWND)
+                            if not hwnd:
                                 try:
                                     hwnd = int(pid_or_hwnd)
-                                except Exception:
+                                except (ValueError, TypeError):
                                     pass
 
                         if not hwnd:
@@ -4973,6 +5963,24 @@ class AgentConstructorWindow(QMainWindow):
                 parent_w.setVisible(is_inline)
             else:
                 self._snippet_code_editor.setVisible(is_inline)
+        
+        # Также скрываем через _snippet_widgets если ключ '_code_editor' есть
+        code_w = self._snippet_widgets.get('_code_editor')
+        if code_w:
+            pw = code_w.parent()
+            if pw:
+                pw.setVisible(is_inline)
+            else:
+                code_w.setVisible(is_inline)
+        
+        # Путь к файлу — виден только в режиме file
+        path_widget = self._snippet_widgets.get('script_path')
+        if path_widget:
+            parent_w = path_widget.parent()
+            if parent_w and parent_w != self:
+                parent_w.setVisible(not is_inline)
+            else:
+                path_widget.setVisible(not is_inline)
         
         # Путь к файлу — виден только в режиме file
         path_widget = self._snippet_widgets.get('script_path')
@@ -5502,7 +6510,53 @@ class AgentConstructorWindow(QMainWindow):
                 logger=self._log,
                 project_browser_manager=project_browser_manager,
             )
-            
+        # ── BROWSER_PARSE ─────────────────────────────────────────
+        elif agent_type == AgentType.BROWSER_PARSE:
+            mode = _get_val('pick_mode') or 'interactive'
+            _show('css_selector',  mode == 'css')
+            _show('xpath_selector', mode == 'xpath')
+            _show('ai_prompt',     mode in ('ai_universal',))
+            _show('picked_selector', mode == 'interactive')
+            save_to = _get_val('save_to') or 'variable'
+            _show('result_var',   save_to == 'variable')
+            _show('result_list',  save_to == 'list')
+            _show('result_table', save_to == 'table')
+            for cb_key in ('pick_mode', 'save_to'):
+                cb = self._snippet_widgets.get(cb_key)
+                if cb and hasattr(cb, 'currentIndexChanged'):
+                    try: cb.currentIndexChanged.disconnect()
+                    except Exception: pass
+                    cb.currentIndexChanged.connect(
+                        lambda _, _at=AgentType.BROWSER_PARSE:
+                            self._update_snippet_field_visibility(_at))
+
+        # ── PROGRAM_INSPECTOR ────────────────────────────────────
+        elif agent_type == AgentType.PROGRAM_INSPECTOR:
+            src = _get_val('program_source') or 'hwnd_var'
+            _show('hwnd_var',            src == 'hwnd_var')
+            _show('window_title_filter', src == 'window_title')
+            _show('pid_var',             src == 'pid_var')
+            ai_on = bool(_get_val('use_ai_interpret'))
+            _show('ai_task', ai_on)
+            save_to = _get_val('save_to') or 'table'
+            _show('result_var',   save_to == 'variable')
+            _show('result_table', save_to == 'table')
+            _show('result_list',  save_to == 'list')
+            for cb_key in ('program_source', 'save_to'):
+                cb = self._snippet_widgets.get(cb_key)
+                if cb and hasattr(cb, 'currentIndexChanged'):
+                    try: cb.currentIndexChanged.disconnect()
+                    except Exception: pass
+                    cb.currentIndexChanged.connect(
+                        lambda _, _at=AgentType.PROGRAM_INSPECTOR:
+                            self._update_snippet_field_visibility(_at))
+            chk = self._snippet_widgets.get('use_ai_interpret')
+            if chk and hasattr(chk, 'stateChanged'):
+                try: chk.stateChanged.disconnect()
+                except Exception: pass
+                chk.stateChanged.connect(
+                    lambda _, _at=AgentType.PROGRAM_INSPECTOR:
+                        self._update_snippet_field_visibility(_at))    
         # ── BROWSER_PROFILE_OP ────────────────────────────────────
         elif agent_type == AgentType.BROWSER_PROFILE_OP:
             self._execute_profile_op_snippet(snippet_cfg, context)
@@ -6345,6 +7399,12 @@ class AgentConstructorWindow(QMainWindow):
                     if hasattr(self._scene, 'update_edges'):
                         self._scene.update_edges()
         
+        # Синхронизируем picked_selector → target для BROWSER_PARSE (рантайм читает 'target')
+        if current_node.agent_type == AgentType.BROWSER_PARSE:
+            ps = current_node.snippet_config.get('picked_selector', '')
+            if ps:
+                current_node.snippet_config['target'] = ps
+
         # Тег типа: рантайм будет знать какой тип сохранён
         current_node.snippet_config['_snippet_type'] = current_node.agent_type.value
         
@@ -7875,6 +8935,44 @@ Output as structured JSON with workflow definition.""",
         f_input.addRow("Файл данных:", fld_data_file)
         f_input.addRow("Файл результатов:", fld_result_file)
         f_input.addRow("Режим записи:", cmb_result_mode)
+
+        # ── Загружаем существующие настройки, если уже были сохранены ─────────
+        _existing_settings = None
+        if hasattr(self._vars_panel, '_project_input_settings') and \
+                self._vars_panel._project_input_settings:
+            _existing_settings = self._vars_panel._project_input_settings[0]
+
+        if _existing_settings:
+            _ci = fld_captcha_service.findData(_existing_settings.get('captcha_service', 'none'))
+            if _ci >= 0:
+                fld_captcha_service.setCurrentIndex(_ci)
+            fld_captcha_key.setText(_existing_settings.get('captcha_key', ''))
+            fld_threads.setValue(_existing_settings.get('threads', 1))
+            fld_retry.setValue(_existing_settings.get('retry', 3))
+            fld_delay_min.setValue(_existing_settings.get('delay_min', 500))
+            fld_delay_max.setValue(_existing_settings.get('delay_max', 2000))
+            chk_random_ua.setChecked(_existing_settings.get('random_ua', False))
+            chk_cookies.setChecked(_existing_settings.get('save_cookies', False))
+            fld_data_file.setText(_existing_settings.get('data_file', ''))
+            fld_result_file.setText(_existing_settings.get('result_file', ''))
+            _ri = cmb_result_mode.findData(_existing_settings.get('result_mode', 'append'))
+            if _ri >= 0:
+                cmb_result_mode.setCurrentIndex(_ri)
+            # Восстанавливаем BotUI поля
+            for _bf in _existing_settings.get('botui_fields', []):
+                _r = tbl_botui.rowCount()
+                tbl_botui.insertRow(_r)
+                tbl_botui.setItem(_r, 0, QTableWidgetItem(_bf.get('name', '')))
+                tbl_botui.setItem(_r, 1, QTableWidgetItem(_bf.get('label', '')))
+                _cmb = QComboBox()
+                for _t in ["Текст", "Пароль", "Число", "Флаг", "Файл", "Папка", "Комбо"]:
+                    _cmb.addItem(_t)
+                _ti = _cmb.findText(_bf.get('type', 'Текст'))
+                if _ti >= 0:
+                    _cmb.setCurrentIndex(_ti)
+                tbl_botui.setCellWidget(_r, 2, _cmb)
+                tbl_botui.setItem(_r, 3, QTableWidgetItem(_bf.get('default', '')))
+
         tabs.addTab(tab_input, "⚙️ Настройки")
 
         # ── Вкладка: BotUI — параметры интерфейса бота ──────────────
@@ -8640,7 +9738,7 @@ Output as structured JSON with workflow definition.""",
                     AgentType.TABLE_OPERATION, AgentType.FILE_OPERATION,
                     AgentType.DIR_OPERATION, AgentType.TEXT_PROCESSING,
                     AgentType.JSON_XML, AgentType.VARIABLE_PROC, AgentType.RANDOM_GEN,
-                    AgentType.PROJECT_INFO]:
+                    AgentType.PROJECT_INFO, AgentType.PROJECT_IN_PROJECT]:
             icon = _SNIPPET_ICONS.get(at, "📜")
             label = {
                 AgentType.CODE_SNIPPET: tr("📜 Код (сниппет)"),
@@ -8649,6 +9747,7 @@ Output as structured JSON with workflow definition.""",
                 AgentType.LOOP: tr("🔁 Цикл (Loop)"),
                 AgentType.VARIABLE_SET: tr("📝 Установить переменную"),
                 AgentType.HTTP_REQUEST: tr("🌐 HTTP-запрос"),
+                AgentType.PROJECT_IN_PROJECT: tr("📦 Проект в проекте"),
                 AgentType.DELAY: tr("⏳ Задержка"),
                 AgentType.LOG_MESSAGE: tr("📋 Запись в лог"),
                 AgentType.NOTIFICATION: tr("🔔 Уведомление"),
@@ -8665,6 +9764,10 @@ Output as structured JSON with workflow definition.""",
                 AgentType.VARIABLE_PROC: tr("🔧 Обработка переменных"),
                 AgentType.RANDOM_GEN:  tr("🎲 Генерация случайных данных"),
                 AgentType.PROJECT_INFO: tr("🔎 Инфо о проекте"),
+                AgentType.PROJECT_IN_PROJECT: tr("📦 Проект в проекте"),
+                AgentType.PROGRAM_AGENT:      tr("🖥🧠 Program Agent"),
+                AgentType.BROWSER_PARSE:      tr("🕸️ Browser Parse"),
+                AgentType.PROGRAM_INSPECTOR:  tr("🔬 Program Inspector"),
             }.get(at, tr(at.value.replace('_', ' ').title()))
             item = QListWidgetItem(f"{icon}  {label}")
             item.setData(Qt.ItemDataRole.UserRole, at)
@@ -8705,14 +9808,43 @@ Output as structured JSON with workflow definition.""",
         skill_layout.addWidget(self._skill_list)
         palette_tabs.addTab(skill_widget, "🔧 Скиллы")
 
-        layout.addWidget(palette_tabs)
-        
-        # Применяем начальные стили
+        # Применяем начальные стили (до создания splitter)
         self._apply_palette_styles()
-        
-        layout.addWidget(self._build_browser_palette_section())
-        layout.addWidget(self._build_program_palette_section())
-        
+
+        # Оборачиваем секции Браузер/Программы в QScrollArea для скролла
+        browser_grp = self._build_browser_palette_section()
+        program_grp = self._build_program_palette_section()
+
+        browser_scroll = QScrollArea()
+        browser_scroll.setWidget(browser_grp)
+        browser_scroll.setWidgetResizable(True)
+        browser_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        browser_scroll.setMinimumHeight(80)
+        browser_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        program_scroll = QScrollArea()
+        program_scroll.setWidget(program_grp)
+        program_scroll.setWidgetResizable(True)
+        program_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        program_scroll.setMinimumHeight(80)
+        program_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        # Вертикальный сплиттер: вкладки + браузер + программы — все растягиваются
+        left_splitter = QSplitter(Qt.Orientation.Vertical)
+        left_splitter.setChildrenCollapsible(False)
+        left_splitter.addWidget(palette_tabs)
+        left_splitter.addWidget(browser_scroll)
+        left_splitter.addWidget(program_scroll)
+        left_splitter.setStretchFactor(0, 3)  # вкладки — больше пространства по умолчанию
+        left_splitter.setStretchFactor(1, 1)
+        left_splitter.setStretchFactor(2, 1)
+        left_splitter.setStyleSheet("""
+            QSplitter::handle { background: #2a2a3a; height: 5px; }
+            QSplitter::handle:hover { background: #43AEFF; }
+        """)
+
+        layout.addWidget(left_splitter)
+
         return panel
     
     def _build_browser_palette_section(self) -> QWidget:
@@ -8740,6 +9872,8 @@ Output as structured JSON with workflow definition.""",
             (AgentType.BROWSER_CLOSE,       tr("🔴 Закрыть браузер")),
             (AgentType.BROWSER_PROFILE_OP,  tr("🪪 Операции с профилем")),
             (AgentType.PROJECT_INFO,         tr("🔎 Информация о проекте")),
+            (AgentType.BROWSER_PARSE,        tr("🕸️ Парсинг текста из браузера")),
+            (AgentType.PROGRAM_INSPECTOR,    tr("🔬 Инспекция программы")),
         ]
 
         self._browser_palette_btns = []   # ← добавляем список для обновления темы
@@ -8796,6 +9930,8 @@ Output as structured JSON with workflow definition.""",
             (AgentType.PROGRAM_CLICK_IMAGE,  tr("🖼 Клик по картинке")),
             (AgentType.PROGRAM_SCREENSHOT,   tr("📸 Скриншот программы")),
             (AgentType.PROGRAM_AGENT,        tr("🖥🧠 Program Agent (AI)")),
+            (AgentType.BROWSER_PARSE,        tr("🕸️ Browser Parse")),
+            (AgentType.PROGRAM_INSPECTOR,        tr("🔬 Program Inspector")),
         ]
         self._program_palette_btns = []
         for atype, label in items:
@@ -9732,6 +10868,7 @@ Output as structured JSON with workflow definition.""",
                 self._vars_panel._reload_variables()
                 self._vars_panel._reload_notes()
                 self._vars_panel._load_lists_tables_from_workflow()
+                self._vars_panel._load_global_vars_from_workflow()
 
             # Сохраняем состояние обратно в текущий ProjectTab
             _tab = self._current_project_tab()
@@ -10119,6 +11256,35 @@ Output as structured JSON with workflow definition.""",
         tool_configs = getattr(self, '_tool_configs', {}) if hasattr(self, '_tool_configs') else {}
         
         _active_tab = self._current_project_tab()
+
+        # ── Переносим живые программы из предыдущего запуска в новый контекст ──
+        _carry_open_programs = {}
+        try:
+            import ctypes as _ctypes
+            def _pid_alive(p: int) -> bool:
+                try:
+                    _h = _ctypes.windll.kernel32.OpenProcess(0x100000, False, p)
+                    if not _h:
+                        return False
+                    _r = _ctypes.windll.kernel32.WaitForSingleObject(_h, 0)
+                    _ctypes.windll.kernel32.CloseHandle(_h)
+                    return _r == 0x102
+                except Exception:
+                    return False
+            _prev = {}
+            if _active_tab:
+                _prev = getattr(_active_tab, '_last_open_programs', {}) or {}
+            if not _prev:
+                _prev = getattr(self, '_last_open_programs', {}) or {}
+            for _pid_str, _entry in _prev.items():
+                try:
+                    if _pid_alive(int(_pid_str)):
+                        _carry_open_programs[_pid_str] = _entry
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         rt.configure(
             workflow=self._workflow,
             scene_nodes=scene_nodes,
@@ -10133,6 +11299,7 @@ Output as structured JSON with workflow definition.""",
             only_node_ids=only_node_ids,
             step_mode=step_mode,
             project_variables=project_vars,
+            initial_context={'_open_programs': _carry_open_programs} if _carry_open_programs else None,
             project_browser_manager=_active_tab.browser_manager if _active_tab else None,
             browser_tray_callback=_active_tab.send_browser_to_tray if _active_tab else None,
         )
@@ -10798,9 +11965,11 @@ Output as structured JSON with workflow definition.""",
                 if hasattr(vp, '_tabs'):
                     vp._tabs.setTabText(0, tr("📋 Переменные"))
                     vp._tabs.setTabText(1, tr("🔍 Regex Тестер"))
-                    vp._tabs.setTabText(2, tr("📋 Списки / Таблицы"))
-                    vp._tabs.setTabText(3, tr("🌍 Глобальные"))
-                    vp._tabs.setTabText(4, tr("📌 Заметки"))
+                    vp._tabs.setTabText(2, tr("🟨 JS Тестер"))
+                    vp._tabs.setTabText(3, tr("🔣 X/JSON Path"))
+                    vp._tabs.setTabText(4, tr("📋 Списки / Таблицы"))
+                    vp._tabs.setTabText(5, tr("🌍 Глобальные"))
+                    vp._tabs.setTabText(6, tr("📌 Заметки"))
                 if hasattr(vp, '_lists_tables_sub_tabs'):
                     vp._lists_tables_sub_tabs.setTabText(0, tr("📃 Списки"))
                     vp._lists_tables_sub_tabs.setTabText(1, tr("📊 Таблицы"))
@@ -10900,6 +12069,7 @@ Output as structured JSON with workflow definition.""",
                     AgentType.VARIABLE_PROC:   tr("Обработка переменных"),
                     AgentType.RANDOM_GEN:      tr("Random (генерация)"),
                     AgentType.PROJECT_INFO:    tr("🔎 Инфо о проекте"),
+                    AgentType.PROJECT_IN_PROJECT: tr("📦 Проект в проекте"),
                 }
                 for i in range(self._snippet_list.count()):
                     item = self._snippet_list.item(i)
@@ -10978,6 +12148,12 @@ Output as structured JSON with workflow definition.""",
             event.accept()
             return
         
+        # Ctrl+F — Поиск по проекту
+        if event.key() == Qt.Key.Key_F and modifiers == Qt.KeyboardModifier.ControlModifier:
+            self._open_project_search()
+            event.accept()
+            return
+
         if event.key() == Qt.Key.Key_Delete:
             self._delete_selected()
         elif event.key() == Qt.Key.Key_S and modifiers == Qt.KeyboardModifier.ControlModifier:
@@ -11390,8 +12566,18 @@ Output as structured JSON with workflow definition.""",
                 continue
             # Пропускаем пустые вкладки без файла и без нод
             _has_file = bool(getattr(tab, 'project_path', '') or '')
-            _has_nodes = bool(tab.workflow.nodes or tab.workflow.edges)
-            if not _has_file and not _has_nodes:
+            _nodes = list(tab.workflow.nodes) if tab.workflow.nodes else []
+            _is_blank_template = (
+                not _has_file
+                and not tab.workflow.edges
+                and len(_nodes) <= 1
+                and all(
+                    getattr(n, 'agent_type', None)
+                    and n.agent_type.value == 'project_start'
+                    for n in _nodes
+                )
+            )
+            if _is_blank_template:
                 continue
             # Имя: сначала из пути файла, затем из workflow.name, затем из вкладки
             _path = getattr(tab, 'project_path', '') or ''

@@ -6071,9 +6071,10 @@ import ctypes, base64, io
 class ProgramTrayMiniature(QWidget):
     """Миниатюра одной открытой программы — аналог BrowserTrayMiniature."""
 
-    def __init__(self, pid: int, entry: dict, runtime_ref, parent=None):
+    def __init__(self, instance_key: str, entry: dict, runtime_ref, parent=None):
         super().__init__(parent)
-        self.pid = pid
+        self.instance_key = instance_key  # строковый ключ, например "notepad.exe_0"
+        self.pid = entry.get('pid', 0)    # числовой PID только для WinAPI
         self.entry = entry
         self._runtime = runtime_ref
         self._build_ui()
@@ -6086,10 +6087,12 @@ class ProgramTrayMiniature(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        name = self.entry.get('name', f"PID:{self.pid}")
+        # Заголовок: имя программы или ключ экземпляра
+        name = self.entry.get('name') or self.instance_key
         self._lbl_title = QLabel(f"🖥 {name}")
         self._lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._lbl_title.setStyleSheet("font-weight:bold;font-size:11px;")
+        self._lbl_title.setToolTip(f"Key: {self.instance_key}\nPID: {self.pid}")
         layout.addWidget(self._lbl_title)
 
         self._lbl_screen = QLabel()
@@ -6128,8 +6131,6 @@ class ProgramTrayMiniature(QWidget):
         if not hwnd:
             return
         try:
-            import ctypes
-            from ctypes import wintypes
             import win32gui, win32ui, win32con
             left, top, right, bot = win32gui.GetWindowRect(hwnd)
             w, h = right - left, bot - top
@@ -6174,42 +6175,44 @@ class ProgramTrayMiniature(QWidget):
                                              self.entry.get('win_h', 600), True)
 
     def _close_window(self):
+        """Закрыть окно программы и удалить миниатюру из трея."""
         hwnd = self._get_hwnd()
         if hwnd:
             ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
-        # Убираем из реестра и из трея немедленно
+        
+        # Убираем из реестра и из трея немедленно по строковому ключу
         panel = getattr(self, '_panel_ref', None)
         if panel:
-            panel._remove_program(self.pid)
-        # Удаляем из реестра открытых программ
+            panel._remove_program(self.instance_key)
+        
+        # Дополнительная очистка из всех возможных мест хранения
         try:
             panel = self.parent().parent()  # ProgramInstancePanel
             mw = panel._main_window
             for attr in ('_runtime_thread', '_runtime'):
                 rt = getattr(mw, attr, None)
                 if rt and hasattr(rt, '_context'):
-                    rt._context.get('_open_programs', {}).pop(str(self.pid), None)
+                    rt._context.get('_open_programs', {}).pop(self.instance_key, None)
             tab = mw._current_project_tab() if hasattr(mw, '_current_project_tab') else None
             if tab:
                 for a in ('_last_runtime', '_runtime', '_runtime_thread'):
                     rt3 = getattr(tab, a, None)
                     if rt3 and hasattr(rt3, '_context'):
-                        rt3._context.get('_open_programs', {}).pop(str(self.pid), None)
-                saved = getattr(tab, '_last_open_programs', {})
-                saved.pop(str(self.pid), None)
-            getattr(mw, '_last_open_programs', {}).pop(str(self.pid), None)
+                        rt3._context.get('_open_programs', {}).pop(self.instance_key, None)
+                getattr(tab, '_last_open_programs', {}).pop(self.instance_key, None)
+            getattr(mw, '_last_open_programs', {}).pop(self.instance_key, None)
         except Exception:
             pass
+        
         # Немедленно убираем миниатюру из UI
         try:
             panel = self.parent().parent()
-            if hasattr(panel, '_miniatures') and self.pid in panel._miniatures:
-                panel._miniatures.pop(self.pid)
+            if hasattr(panel, '_miniatures') and self.instance_key in panel._miniatures:
+                panel._miniatures.pop(self.instance_key)
                 panel._flow.removeWidget(self)
                 self.deleteLater()
         except Exception:
             pass
-
 
 class ProgramInstancePanel(QWidget):
     """Панель управления открытыми программами — аналог BrowserInstancePanel."""
@@ -6217,7 +6220,7 @@ class ProgramInstancePanel(QWidget):
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self._main_window = main_window
-        self._miniatures: dict[int, ProgramTrayMiniature] = {}
+        self._miniatures: dict[str, ProgramTrayMiniature] = {}  # <-- строковые ключи
         self._build_ui()
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._refresh)
@@ -6325,58 +6328,117 @@ class ProgramInstancePanel(QWidget):
             pass
         return {}
 
-    def _remove_program(self, pid: int):
-        """Удалить программу из реестра и убрать миниатюру из трея."""
-        pid_str = str(pid)
+    def _remove_program(self, instance_key: str):
+        """Удалить программу из реестра и убрать миниатюру из трея по строковому ключу."""
+        # Удаляем из всех возможных мест хранения
         try:
             mw = self._main_window
             for attr in ('_runtime_thread', '_runtime'):
                 rt = getattr(mw, attr, None)
                 if rt and hasattr(rt, '_context'):
-                    rt._context.get('_open_programs', {}).pop(pid_str, None)
+                    rt._context.get('_open_programs', {}).pop(instance_key, None)
             tab = mw._current_project_tab() if hasattr(mw, '_current_project_tab') else None
             if tab:
                 for a in ('_last_runtime', '_runtime', '_runtime_thread'):
                     rt3 = getattr(tab, a, None)
                     if rt3 and hasattr(rt3, '_context'):
-                        rt3._context.get('_open_programs', {}).pop(pid_str, None)
-                getattr(tab, '_last_open_programs', {}).pop(pid_str, None)
-            getattr(mw, '_last_open_programs', {}).pop(pid_str, None)
+                        rt3._context.get('_open_programs', {}).pop(instance_key, None)
+                getattr(tab, '_last_open_programs', {}).pop(instance_key, None)
+            getattr(mw, '_last_open_programs', {}).pop(instance_key, None)
         except Exception:
             pass
+        
         # Убираем виджет из UI
-        if pid in self._miniatures:
-            w = self._miniatures.pop(pid)
+        if instance_key in self._miniatures:
+            w = self._miniatures.pop(instance_key)
             self._flow.removeWidget(w)
             w.deleteLater()
+        
         has_programs = len(self._miniatures) > 0
         self._lbl_empty.setVisible(not has_programs)
         self._container.setVisible(has_programs)
 
     def _refresh(self):
-        programs = self._get_open_programs()
-        current_pids = set(int(k) for k in programs.keys())
-        shown_pids = set(self._miniatures.keys())
+        """Обновить список миниатюр; автоматически убирает завершённые процессы."""
+        import ctypes as _ct
 
-        # Убираем закрытые
-        for pid in shown_pids - current_pids:
-            w = self._miniatures.pop(pid)
+        def _pid_alive(pid: int) -> bool:
+            try:
+                h = _ct.windll.kernel32.OpenProcess(0x100000, False, pid)
+                if not h:
+                    return False
+                ret = _ct.windll.kernel32.WaitForSingleObject(h, 0)
+                _ct.windll.kernel32.CloseHandle(h)
+                return ret == 0x102   # WAIT_TIMEOUT = процесс жив
+            except Exception:
+                return False
+
+        programs = self._get_open_programs()
+
+        # ── Находим мёртвые PID и чистим все хранилища ───────────────────────
+        dead_keys: set[str] = set()
+        for key, entry in list(programs.items()):
+            pid = int(entry.get('pid', 0) or 0)
+            if pid and not _pid_alive(pid):
+                dead_keys.add(key)
+
+        if dead_keys:
+            mw = self._main_window
+            # runtime context
+            for _attr in ('_runtime_thread', '_runtime'):
+                _rt = getattr(mw, _attr, None)
+                if _rt and hasattr(_rt, '_context'):
+                    for dk in dead_keys:
+                        _rt._context.get('_open_programs', {}).pop(dk, None)
+            # tab storage
+            try:
+                _tab = mw._current_project_tab() if hasattr(mw, '_current_project_tab') else None
+                if _tab:
+                    for _a in ('_last_runtime', '_runtime', '_runtime_thread'):
+                        _rt3 = getattr(_tab, _a, None)
+                        if _rt3 and hasattr(_rt3, '_context'):
+                            for dk in dead_keys:
+                                _rt3._context.get('_open_programs', {}).pop(dk, None)
+                    _lop = getattr(_tab, '_last_open_programs', {})
+                    for dk in dead_keys:
+                        _lop.pop(dk, None)
+            except Exception:
+                pass
+            # main window storage
+            for dk in dead_keys:
+                getattr(mw, '_last_open_programs', {}).pop(dk, None)
+            # workflow metadata
+            try:
+                _wf = getattr(mw, '_workflow', None)
+                if _wf and isinstance(getattr(_wf, 'metadata', None), dict):
+                    _meta = _wf.metadata.get('_open_programs_meta', {})
+                    for dk in dead_keys:
+                        _meta.pop(dk, None)
+            except Exception:
+                pass
+
+        # ── Актуальный набор живых ключей ─────────────────────────────────────
+        current_keys = set(programs.keys()) - dead_keys
+        shown_keys   = set(self._miniatures.keys())
+
+        # Убираем из UI то, чего нет среди живых
+        for key in shown_keys - current_keys:
+            w = self._miniatures.pop(key)
             self._flow.removeWidget(w)
             w.deleteLater()
 
         # Добавляем новые / обновляем существующие
-        for pid_str, entry in programs.items():
-            pid = int(pid_str)
-            if pid not in self._miniatures:
-                mini = ProgramTrayMiniature(pid, entry, None, self._container)
-                mini._panel_ref = self  # для удаления из трея по кнопке Close
-                self._miniatures[pid] = mini
+        for key in current_keys:
+            entry = programs[key]
+            if key not in self._miniatures:
+                mini = ProgramTrayMiniature(key, entry, None, self._container)
+                mini._panel_ref = self
+                self._miniatures[key] = mini
                 self._flow.addWidget(mini)
             else:
-                # Обновляем entry (hwnd мог появиться позже)
-                self._miniatures[pid].entry = entry
+                self._miniatures[key].entry = entry
+                self._miniatures[key].pid   = entry.get('pid')
 
-        # Показываем/скрываем empty state
         has_programs = len(self._miniatures) > 0
         self._lbl_empty.setVisible(not has_programs)
         self._container.setVisible(has_programs)
